@@ -103,26 +103,9 @@ When a player installs your game via a tracked source (ad campaign, deep link, c
 2. **Revenue Attribution** - In-app purchases attributed back to acquisition campaign
 3. **Cohort Analysis** - Compare player quality and LTV across traffic sources
 
-#### Deep Link Handling
+### Boostlink Deep Links
 
-```csharp
-void Start()
-{
-    BoostOpsSDK.OnDeepLinkReceived += (deepLink) =>
-    {
-        Debug.Log($"Opened via: {deepLink.Url}");
-        
-        if (deepLink.Parameters.ContainsKey("offer"))
-        {
-            ApplyOffer(deepLink.Parameters["offer"]);
-        }
-    };
-}
-```
-
-### Deep Links
-
-Create branded short links in the BoostOps dashboard that drive installs and attribute all downstream actions.
+Create branded boostlink short links in the BoostOps dashboard that drive installs and attribute all downstream actions.
 
 **Free:** `https://yourgame.boostlink.me/summer-sale?offer=50off`  
 **Premium:** `https://yourgame.bst.to/summer-sale?offer=50off`
