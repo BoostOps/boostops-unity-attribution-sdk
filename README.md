@@ -82,12 +82,7 @@ void OnLevelComplete()
 ```csharp
 void OnPurchaseComplete(string productId, decimal price, string currency)
 {
-    BoostOpsSDK.TrackEvent("iap_purchase", new Dictionary<string, object>
-    {
-        { "product_id", productId },
-        { "price_usd", price },
-        { "currency", currency }
-    });
+    BoostOpsSDK.TrackPurchase(price, currency, productId);
 }
 ```
 
@@ -212,12 +207,8 @@ void TestAttribution()
     // Simulate deep link open
     Debug.Log($"Testing attribution with link: {testLink}");
     
-    // Track test events
-    BoostOpsSDK.TrackEvent("test_event", new Dictionary<string, object>
-    {
-        { "test_campaign", "test" },
-        { "test_timestamp", DateTime.Now.ToString() }
-    });
+    // Track test purchase to verify attribution
+    BoostOpsSDK.TrackPurchase(0.99m, "USD", "test_product");
 }
 #endif
 ```
