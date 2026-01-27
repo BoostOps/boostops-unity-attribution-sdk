@@ -1,8 +1,8 @@
 {
   "name": "com.boostops.attribution-sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "BoostOps Attribution SDK",
-  "description": "Complete mobile attribution platform for Unity. Track installs, measure campaign performance, and grow your app portfolio with built-in cross-promotion. Free alternative to AppsFlyer and Adjust with automated deep link configuration.",
+  "description": "Complete mobile attribution platform for Unity. Track installs, measure campaign performance, and configure deep links (Universal Links & App Links). Includes built-in cross-promotion to grow your app portfolio.",
   "unity": "2022.3",
   "unityRelease": "0f1",
   "category": "Mobile",
@@ -16,6 +16,7 @@
     "cross-promotion",
     "cross-promo",
     "deep-linking",
+    "boostlink",
     "universal-links",
     "app-links",
     "appsflyer-alternative",
