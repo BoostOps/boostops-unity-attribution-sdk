@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dependencies>
+  <androidPackages>
+    <!-- Google Play Services Base (required for attribution) -->
+    <androidPackage spec="com.google.android.gms:play-services-basement:18.2.0" />
+    
+    <!-- Android Billing Client (for revenue tracking) -->
+    <androidPackage spec="com.android.billingclient:billing:5.0.0" />
+    
+    <!-- Google Play Install Referrer API (critical for attribution) -->
+    <androidPackage spec="com.android.installreferrer:installreferrer:2.2" />
+    
+    <!-- Google Play Services App Set ID (for cross-app attribution) -->
+    <androidPackage spec="com.google.android.gms:play-services-appset:16.0.2" />
+    
+    <!-- Google Play Services Ads Identifier (for GAID) -->
+    <androidPackage spec="com.google.android.gms:play-services-ads-identifier:18.0.1" />
+    
+    <!-- JSON parsing support -->
+    <androidPackage spec="org.json:json:20210307" />
+  </androidPackages>
+</dependencies> 
