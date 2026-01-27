@@ -1,0 +1,50 @@
+{
+  "name": "com.boostops.attribution-sdk",
+  "version": "1.0.0",
+  "displayName": "BoostOps Attribution SDK",
+  "description": "Complete mobile attribution platform for Unity. Track installs, measure campaign performance, and grow your app portfolio with built-in cross-promotion. Free alternative to AppsFlyer and Adjust with automated deep link configuration.",
+  "unity": "2022.3",
+  "unityRelease": "0f1",
+  "category": "Mobile",
+  "keywords": [
+    "attribution",
+    "attribution-sdk",
+    "mobile-attribution",
+    "install-tracking",
+    "campaign-tracking",
+    "user-acquisition",
+    "cross-promotion",
+    "cross-promo",
+    "deep-linking",
+    "universal-links",
+    "app-links",
+    "appsflyer-alternative",
+    "adjust-alternative",
+    "singular-alternative",
+    "growth-platform",
+    "mobile-analytics",
+    "conversion-tracking",
+    "attribution-tracking",
+    "unity-attribution",
+    "mobile-growth",
+    "ua-tracking"
+  ],
+  "author": {
+    "name": "BoostOps",
+    "email": "support@boostops.com",
+    "url": "https://boostops.io"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BoostOps/boostops-unity-attribution-sdk.git"
+  },
+  "dependencies": {},
+  "samples": [
+    {
+      "displayName": "Attribution & Cross-Promotion Example",
+      "description": "Complete example showing attribution tracking, deep link configuration, and cross-promotion integration",
+      "path": "Scripts/Examples"
+    }
+  ],
+  "type": "tool"
+} 
