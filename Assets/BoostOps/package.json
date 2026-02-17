@@ -1,6 +1,6 @@
 {
   "name": "com.boostops.attribution-sdk",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "displayName": "BoostOps Attribution SDK",
   "description": "Complete mobile attribution platform for Unity. Track installs, measure campaign performance, and configure deep links (Universal Links & App Links). Includes built-in cross-promotion to grow your app portfolio.",
   "unity": "2022.3",

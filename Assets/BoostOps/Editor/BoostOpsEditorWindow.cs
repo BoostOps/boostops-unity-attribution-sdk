@@ -9255,61 +9255,72 @@ namespace BoostOps.Editor
             }
         }
         
-                    void LoadProjectSettings()
-            {
-                Debug.Log("[BoostOps] 🔧 LoadProjectSettings() called - forcing asset creation");
-                
-                // Check if asset file exists before calling GetOrCreateSettings
-                string expectedAssetPath = "Assets/Resources/BoostOps/BoostOpsProjectSettings.asset";
-                bool assetExistsBefore = System.IO.File.Exists(expectedAssetPath);
-                Debug.Log($"[BoostOps] 🔍 Asset file exists BEFORE GetOrCreateSettings(): {assetExistsBefore}");
-                
-                // Get or create the project settings ScriptableObject - this should ALWAYS create an asset file
-                Debug.Log("[BoostOps] 🔍 Calling BoostOpsProjectSettings.GetOrCreateSettings()...");
-                projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
-                Debug.Log($"[BoostOps] 🔍 GetOrCreateSettings() returned: {projectSettings != null} (hash: {projectSettings?.GetHashCode()})");
-                
-                // Check if asset file exists after calling GetOrCreateSettings
-                bool assetExistsAfter = System.IO.File.Exists(expectedAssetPath);
-                Debug.Log($"[BoostOps] 🔍 Asset file exists AFTER GetOrCreateSettings(): {assetExistsAfter}");
-            
-            // Verify the asset was created properly
+        void LoadProjectSettings()
+        {
+            string expectedAssetPath = "Assets/Resources/BoostOps/BoostOpsProjectSettings.asset";
+
+            // Try loading from the DLL helper first (may return in-memory-only instance)
+            projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
+
+            // The DLL is compiled without UNITY_EDITOR, so GetOrCreateSettings() cannot
+            // call AssetDatabase.CreateAsset(). If we got an instance but it has no asset
+            // path on disk, we need to save it ourselves from Editor code.
             string assetPath = AssetDatabase.GetAssetPath(projectSettings);
-            if (string.IsNullOrEmpty(assetPath))
+            if (projectSettings != null && string.IsNullOrEmpty(assetPath))
             {
-                Debug.LogWarning("[BoostOps] ⚠️ Project settings asset path is empty after GetOrCreateSettings() - forcing recreation");
-                
-                // Force another attempt
-                projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
-                assetPath = AssetDatabase.GetAssetPath(projectSettings);
-                
-                if (string.IsNullOrEmpty(assetPath))
+                Debug.Log("[BoostOps] Settings instance exists in memory but has no asset file — creating from Editor");
+
+                try
                 {
-                    Debug.LogError("[BoostOps] ❌ Failed to create project settings asset file - data will not persist");
+                    // Ensure directory structure exists
+                    if (!AssetDatabase.IsValidFolder("Assets/Resources"))
+                        AssetDatabase.CreateFolder("Assets", "Resources");
+                    if (!AssetDatabase.IsValidFolder("Assets/Resources/BoostOps"))
+                        AssetDatabase.CreateFolder("Assets/Resources", "BoostOps");
+
+                    // If the ScriptableObject was created with CreateInstance inside the
+                    // DLL, we can save it directly as a new asset.
+                    AssetDatabase.CreateAsset(projectSettings, expectedAssetPath);
+                    AssetDatabase.SaveAssets();
+                    AssetDatabase.Refresh();
+
+                    assetPath = AssetDatabase.GetAssetPath(projectSettings);
+                    if (!string.IsNullOrEmpty(assetPath))
+                    {
+                        Debug.Log($"[BoostOps] ✅ Project settings asset created at: {assetPath}");
+                    }
+                    else
+                    {
+                        Debug.LogError("[BoostOps] ❌ AssetDatabase.CreateAsset succeeded but path is still empty");
+                    }
                 }
-                else
+                catch (System.Exception ex)
                 {
-                    Debug.Log($"[BoostOps] ✅ Successfully created asset on second attempt: {assetPath}");
+                    Debug.LogError($"[BoostOps] ❌ Failed to create project settings asset: {ex.Message}");
                 }
+            }
+            else if (projectSettings != null)
+            {
+                Debug.Log($"[BoostOps] ✅ Project settings loaded from: {assetPath}");
             }
             else
             {
-                Debug.Log($"[BoostOps] ✅ Project settings asset exists at: {assetPath}");
+                Debug.LogError("[BoostOps] ❌ GetOrCreateSettings returned null — cannot load project settings");
             }
-            
-            // Ensure android package name is current
-            projectSettings.RefreshAndroidPackageName();
-            
-            // Load values from ScriptableObject into editor window fields
-            iosAppStoreId = projectSettings.appleAppStoreId;
-            androidCertFingerprint = projectSettings.androidCertFingerprint;
-            projectSlug = projectSettings.projectSlug;
-            dynamicLinkUrl = projectSettings.fallbackUrl; // Map fallbackUrl to dynamicLinkUrl for UI
-            
-            // NOTE: No sync needed - BoostOpsProjectSettings is the single source of truth
-            
-            // Mark the settings asset as dirty so Unity saves changes
-            UnityEditor.EditorUtility.SetDirty(projectSettings);
+
+            if (projectSettings != null)
+            {
+                // Ensure android package name is current
+                projectSettings.RefreshAndroidPackageName();
+
+                // Load values from ScriptableObject into editor window fields
+                iosAppStoreId = projectSettings.appleAppStoreId;
+                androidCertFingerprint = projectSettings.androidCertFingerprint;
+                projectSlug = projectSettings.projectSlug;
+                dynamicLinkUrl = projectSettings.fallbackUrl;
+
+                EditorUtility.SetDirty(projectSettings);
+            }
         }
         
 
