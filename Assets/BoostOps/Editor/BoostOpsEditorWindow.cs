@@ -9278,20 +9278,41 @@ namespace BoostOps.Editor
                     if (!AssetDatabase.IsValidFolder("Assets/Resources/BoostOps"))
                         AssetDatabase.CreateFolder("Assets/Resources", "BoostOps");
 
-                    // If the ScriptableObject was created with CreateInstance inside the
-                    // DLL, we can save it directly as a new asset.
+                    // Save the DLL-created instance as a new asset file.
                     AssetDatabase.CreateAsset(projectSettings, expectedAssetPath);
                     AssetDatabase.SaveAssets();
                     AssetDatabase.Refresh();
 
-                    assetPath = AssetDatabase.GetAssetPath(projectSettings);
-                    if (!string.IsNullOrEmpty(assetPath))
+                    // The DLL-created instance may not be properly tracked by AssetDatabase
+                    // after CreateAsset (GetAssetPath can return empty for cross-assembly objects).
+                    // Reload from disk to get a properly associated reference.
+                    var reloaded = AssetDatabase.LoadAssetAtPath<BoostOpsProjectSettings>(expectedAssetPath);
+                    if (reloaded != null)
                     {
-                        Debug.Log($"[BoostOps] ✅ Project settings asset created at: {assetPath}");
+                        projectSettings = reloaded;
+                        // Clear the DLL's static cache so future calls return the persisted instance
+                        BoostOpsProjectSettings.ClearCache();
+                        Debug.Log($"[BoostOps] ✅ Project settings asset created and reloaded from: {expectedAssetPath}");
+                    }
+                    else if (System.IO.File.Exists(expectedAssetPath))
+                    {
+                        // File exists on disk but LoadAssetAtPath failed — try one more refresh
+                        AssetDatabase.Refresh();
+                        reloaded = AssetDatabase.LoadAssetAtPath<BoostOpsProjectSettings>(expectedAssetPath);
+                        if (reloaded != null)
+                        {
+                            projectSettings = reloaded;
+                            BoostOpsProjectSettings.ClearCache();
+                            Debug.Log($"[BoostOps] ✅ Project settings asset created (loaded on retry): {expectedAssetPath}");
+                        }
+                        else
+                        {
+                            Debug.LogWarning("[BoostOps] ⚠️ Asset file exists on disk but LoadAssetAtPath failed — settings may not persist until next Editor reload");
+                        }
                     }
                     else
                     {
-                        Debug.LogError("[BoostOps] ❌ AssetDatabase.CreateAsset succeeded but path is still empty");
+                        Debug.LogError("[BoostOps] ❌ Failed to create project settings asset file");
                     }
                 }
                 catch (System.Exception ex)
@@ -12784,19 +12805,31 @@ namespace BoostOps.Editor
                                         UnityEditor.AssetDatabase.SaveAssets();
                                         UnityEditor.AssetDatabase.Refresh();
                                         
-                                        // If asset path is empty, recreate the asset with the new data
+                                        // If asset path is empty, the projectSettings reference isn't
+                                        // associated with a persisted asset. Reload from disk.
                                         string currentAssetPath = AssetDatabase.GetAssetPath(projectSettings);
                                         if (string.IsNullOrEmpty(currentAssetPath))
                                         {
-                                            Debug.LogWarning("[BoostOps] ⚠️ Asset path is empty after save - recreating asset with lookup data");
-                                            projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
-                                            // Re-apply the Apple App Store ID to the new asset
-                                            projectSettings.appleAppStoreId = remoteAppleAppStoreId;
-                                            UnityEditor.EditorUtility.SetDirty(projectSettings);
-                                            UnityEditor.AssetDatabase.SaveAssets();
+                                            string settingsAssetPath = "Assets/Resources/BoostOps/BoostOpsProjectSettings.asset";
+                                            Debug.LogWarning("[BoostOps] ⚠️ Asset path is empty after save - reloading from disk");
+                                            BoostOpsProjectSettings.ClearCache();
+                                            var diskSettings = AssetDatabase.LoadAssetAtPath<BoostOpsProjectSettings>(settingsAssetPath);
+                                            if (diskSettings != null)
+                                            {
+                                                projectSettings = diskSettings;
+                                                projectSettings.appleAppStoreId = remoteAppleAppStoreId;
+                                                UnityEditor.EditorUtility.SetDirty(projectSettings);
+                                                UnityEditor.AssetDatabase.SaveAssets();
+                                                Debug.Log("[BoostOps] ✅ Reloaded settings from disk and updated Apple App Store ID");
+                                            }
+                                            else
+                                            {
+                                                Debug.LogWarning("[BoostOps] ⚠️ Could not reload settings from disk — Apple App Store ID will be applied on next Editor reload");
+                                            }
                                         }
                                         
-                                        // Verify the save worked
+                                        // Verify the save worked by clearing cache and re-reading
+                                        BoostOpsProjectSettings.ClearCache();
                                         var verifySettings = BoostOpsProjectSettings.GetInstance();
                                         Debug.Log($"[BoostOps] 🔍 Final verification - appleAppStoreId: '{verifySettings?.appleAppStoreId}' (should be '{remoteAppleAppStoreId}')");
                                         
