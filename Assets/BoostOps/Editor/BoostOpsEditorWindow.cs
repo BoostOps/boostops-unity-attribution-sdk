@@ -9334,11 +9334,31 @@ namespace BoostOps.Editor
                 // Ensure android package name is current
                 projectSettings.RefreshAndroidPackageName();
 
-                // Load values from ScriptableObject into editor window fields
-                iosAppStoreId = projectSettings.appleAppStoreId;
-                androidCertFingerprint = projectSettings.androidCertFingerprint;
-                projectSlug = projectSettings.projectSlug;
-                dynamicLinkUrl = projectSettings.fallbackUrl;
+                // Load values from ScriptableObject into editor window fields.
+                // Only overwrite if the SO has a non-empty value, to avoid wiping
+                // values already loaded from EditorPrefs when the SO hasn't persisted yet.
+                if (!string.IsNullOrEmpty(projectSettings.appleAppStoreId))
+                    iosAppStoreId = projectSettings.appleAppStoreId;
+                else if (!string.IsNullOrEmpty(iosAppStoreId))
+                {
+                    // EditorPrefs has a value the SO doesn't — sync SO from field
+                    projectSettings.appleAppStoreId = iosAppStoreId;
+                }
+
+                if (!string.IsNullOrEmpty(projectSettings.androidCertFingerprint))
+                    androidCertFingerprint = projectSettings.androidCertFingerprint;
+                else if (!string.IsNullOrEmpty(androidCertFingerprint))
+                    projectSettings.androidCertFingerprint = androidCertFingerprint;
+
+                if (!string.IsNullOrEmpty(projectSettings.projectSlug))
+                    projectSlug = projectSettings.projectSlug;
+                else if (!string.IsNullOrEmpty(projectSlug))
+                    projectSettings.projectSlug = projectSlug;
+
+                if (!string.IsNullOrEmpty(projectSettings.fallbackUrl))
+                    dynamicLinkUrl = projectSettings.fallbackUrl;
+                else if (!string.IsNullOrEmpty(dynamicLinkUrl))
+                    projectSettings.fallbackUrl = dynamicLinkUrl;
 
                 EditorUtility.SetDirty(projectSettings);
             }
@@ -12258,8 +12278,8 @@ namespace BoostOps.Editor
                 #endif
                 
                 var settings = BoostOpsProjectSettings.GetOrCreateSettings();
-                string iosAppStoreId = settings?.appleAppStoreId;
-                string androidSha256 = settings?.androidCertFingerprint;
+                string requestAppleStoreId = settings?.appleAppStoreId;
+                string requestAndroidSha256 = settings?.androidCertFingerprint;
                 string appleTeamId = null;
                 #if UNITY_IOS
                 try { appleTeamId = PlayerSettings.iOS.appleDeveloperTeamID; } catch { }
@@ -12278,9 +12298,9 @@ namespace BoostOps.Editor
                 if (!string.IsNullOrEmpty(cloudProjectId)) jsonParts.Add($"\"cloudProjectId\":\"{EscapeJson(cloudProjectId)}\"");
                 if (!string.IsNullOrEmpty(iosBundleId)) jsonParts.Add($"\"iosBundleId\":\"{EscapeJson(iosBundleId)}\"");
                 if (!string.IsNullOrEmpty(androidPackageName)) jsonParts.Add($"\"androidPackageName\":\"{EscapeJson(androidPackageName)}\"");
-                if (!string.IsNullOrEmpty(iosAppStoreId)) jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(iosAppStoreId)}\"");
+                if (!string.IsNullOrEmpty(requestAppleStoreId)) jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(requestAppleStoreId)}\"");
                 if (!string.IsNullOrEmpty(appleTeamId)) jsonParts.Add($"\"appleTeamId\":\"{EscapeJson(appleTeamId)}\"");
-                if (!string.IsNullOrEmpty(androidSha256)) jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(androidSha256)}\"]");
+                if (!string.IsNullOrEmpty(requestAndroidSha256)) jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(requestAndroidSha256)}\"]");
                 
                 string jsonData = "{" + string.Join(",", jsonParts) + "}";
                 
@@ -12585,9 +12605,11 @@ namespace BoostOps.Editor
                 #endif
                 
                 // Get additional platform-specific data from the now-guaranteed asset
+                // NOTE: Use distinct local names to avoid shadowing instance fields
+                // (iosAppStoreId, androidCertFingerprint) which are updated later by async code.
                 var settings = projectSettings;
-                string iosAppStoreId = settings?.appleAppStoreId;
-                string androidSha256 = settings?.androidCertFingerprint;
+                string requestAppleStoreId = settings?.appleAppStoreId;
+                string requestAndroidSha256 = settings?.androidCertFingerprint;
                 
                 // Try to get Apple Team ID from iOS player settings (if available)
                 string appleTeamId = null;
@@ -12607,9 +12629,9 @@ namespace BoostOps.Editor
                 Debug.Log($"[BoostOps] Cloud Project ID: {cloudProjectId ?? "not set"}");
                 Debug.Log($"[BoostOps] iOS Bundle ID: {iosBundleId ?? "not set"}");
                 Debug.Log($"[BoostOps] Android Package Name: {androidPackageName ?? "not set"}");
-                Debug.Log($"[BoostOps] Apple App Store ID: {iosAppStoreId ?? "not set"}");
+                Debug.Log($"[BoostOps] Apple App Store ID: {requestAppleStoreId ?? "not set"}");
                 Debug.Log($"[BoostOps] Apple Team ID: {appleTeamId ?? "not set"}");
-                Debug.Log($"[BoostOps] Android SHA256: {(string.IsNullOrEmpty(androidSha256) ? "not set" : "configured")}");
+                Debug.Log($"[BoostOps] Android SHA256: {(string.IsNullOrEmpty(requestAndroidSha256) ? "not set" : "configured")}");
                 
                 if (string.IsNullOrEmpty(iosBundleId) && string.IsNullOrEmpty(androidPackageName) && string.IsNullOrEmpty(productGuid))
                 {
@@ -12647,14 +12669,14 @@ namespace BoostOps.Editor
                 if (!string.IsNullOrEmpty(androidPackageName))
                     jsonParts.Add($"\"androidPackageName\":\"{EscapeJson(androidPackageName)}\"");
                 
-                if (!string.IsNullOrEmpty(iosAppStoreId))
-                    jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(iosAppStoreId)}\"");
+                if (!string.IsNullOrEmpty(requestAppleStoreId))
+                    jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(requestAppleStoreId)}\"");
                 
                 if (!string.IsNullOrEmpty(appleTeamId))
                     jsonParts.Add($"\"appleTeamId\":\"{EscapeJson(appleTeamId)}\"");
                 
-                if (!string.IsNullOrEmpty(androidSha256))
-                    jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(androidSha256)}\"]");
+                if (!string.IsNullOrEmpty(requestAndroidSha256))
+                    jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(requestAndroidSha256)}\"]");
                 
                 string jsonData = "{" + string.Join(",", jsonParts) + "}";
                 Debug.Log($"[BoostOps] 📤 Project lookup request: {jsonData}");
