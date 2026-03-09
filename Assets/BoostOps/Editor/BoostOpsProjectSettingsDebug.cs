@@ -21,7 +21,7 @@ namespace BoostOps.Editor
             Debug.Log($"[BoostOps] - Android Package: {settings?.androidPackageName ?? "NOT SET"}");
             Debug.Log($"[BoostOps] - Android Cert Fingerprint: {(!string.IsNullOrEmpty(settings?.androidCertFingerprint) ? "***SET***" : "NOT SET")}");
             Debug.Log($"[BoostOps] - Amazon Store ID: {settings?.amazonStoreId ?? "NOT SET"}");
-            Debug.Log($"[BoostOps] - Microsoft Store ID: {settings?.windowsStoreId ?? "NOT SET"}");
+            Debug.Log($"[BoostOps] - Microsoft Store ID: {settings?.microsoftStoreId ?? "NOT SET"}");
             Debug.Log($"[BoostOps] - Samsung Store ID: {settings?.samsungStoreId ?? "NOT SET"}");
             Debug.Log($"[BoostOps] - Project Slug: {settings?.projectSlug ?? "NOT SET"}");
             Debug.Log($"[BoostOps] - Custom Domain: {settings?.customDomain ?? "NOT SET"}");

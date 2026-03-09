@@ -14,6 +14,9 @@
 
 /BoostOps-DLL-Build/BuildSource/
 /BoostOps-Internal-Source/
+/Plugins/BoostOps.Internal.dll
+/Plugins/BoostOps.Internal.dll.meta
+/Plugins/netstandard2.1*
 
 # By default unity supports Blender asset imports, *.blend1 blender files do not need to be commited to version control.
 *.blend1

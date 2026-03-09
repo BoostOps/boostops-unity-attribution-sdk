@@ -5,9 +5,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Collections;
 using System.Linq;
-#if UNITY_REMOTE_CONFIG
 using Unity.Services.Core;
-#endif
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -218,24 +216,16 @@ namespace BoostOps
                 return;
             }
             
-            // Initialize Unity Services Core first (required for Remote Config)
-#if UNITY_REMOTE_CONFIG
             AddLog("🔧 Initializing Unity Services...");
-            Debug.Log("[BoostOpsDemo] Initializing Unity Services Core for Remote Config");
-            
             try
             {
                 await Unity.Services.Core.UnityServices.InitializeAsync();
                 AddLog("✅ Unity Services initialized successfully");
-                Debug.Log("[BoostOpsDemo] Unity Services Core initialized successfully");
             }
             catch (System.Exception ex)
             {
                 AddLog($"❌ Unity Services initialization failed: {ex.Message}");
-                Debug.LogError($"[BoostOpsDemo] Unity Services initialization failed: {ex.Message}");
-                // Continue anyway - some features may still work
             }
-#endif
             
             // Set up custom prefabs before SDK initialization
             SetupCustomPrefabs();
@@ -258,20 +248,15 @@ namespace BoostOps
                 AddLog("🌐 Server Config Mode: Using project key from BoostOps Project Settings");
             }
             
-            // Fetch remote config for ServerConfigMode
-#if UNITY_REMOTE_CONFIG
             if (initMode == InitializationMode.ServerConfigMode)
             {
                 AddLog("🌐 Fetching remote config...");
-                Debug.Log("[BoostOpsDemo] Fetching remote config for server mode");
                 
                 try
                 {
-                    // Get project settings for attributes
                     var projectSettings = BoostOpsProjectSettings.GetInstance();
                     string projectKey = projectSettings?.projectKey ?? "unknown";
                     
-                    // Create attributes for the fetch
                     var userAttributes = new System.Collections.Generic.Dictionary<string, object>();
                     var appAttributes = new System.Collections.Generic.Dictionary<string, object>
                     {
@@ -281,28 +266,23 @@ namespace BoostOps
                     
                     await Unity.Services.RemoteConfig.RemoteConfigService.Instance.FetchConfigsAsync(userAttributes, appAttributes);
                     
-                    // Check if we got the config
                     string configKey = "boostops_config";
                     var configJson = Unity.Services.RemoteConfig.RemoteConfigService.Instance.appConfig.GetJson(configKey, "{}");
                     
                     if (!string.IsNullOrEmpty(configJson) && configJson != "{}")
                     {
-                        AddLog($"✅ Remote config fetched successfully! ({configJson.Length} characters)");
-                        Debug.Log($"[BoostOpsDemo] Remote config fetched: {configJson.Length} characters");
+                        AddLog($"✅ Remote config fetched ({configJson.Length} chars)");
                     }
                     else
                     {
                         AddLog($"⚠️ No remote config found for key: {configKey}");
-                        Debug.LogWarning($"[BoostOpsDemo] No remote config found for key: {configKey}");
                     }
                 }
                 catch (System.Exception ex)
                 {
                     AddLog($"❌ Failed to fetch remote config: {ex.Message}");
-                    Debug.LogError($"[BoostOpsDemo] Failed to fetch remote config: {ex.Message}");
                 }
             }
-#endif
             
             // Initialize SDK
             BoostOpsLogger.LogDebug("Demo", "Starting SDK initialization");

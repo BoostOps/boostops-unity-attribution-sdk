@@ -747,12 +747,17 @@ namespace BoostOps
         public string type;
         public string apple_bundle_id;
         public string apple_store_id;
+        public string apple_team_id;
         public string android_package_name;
         public string[] android_sha256_fingerprints;
         public string amazon_asin;
+        public string amazon_package_name;
         public string microsoft_product_id;
         public string samsung_package_name;
+        public string samsung_seller_id;
         public bool is_active;
+        public string ownership_status;
+        public string verification_method;
     }
     
     [System.Serializable]

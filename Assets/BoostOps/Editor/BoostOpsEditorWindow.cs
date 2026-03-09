@@ -215,6 +215,9 @@ namespace BoostOps.Editor
     {
         public string apple;
         public string google;
+        public string amazon;
+        public string microsoft;
+        public string samsung;
     }
     
     [System.Serializable]
@@ -472,16 +475,22 @@ namespace BoostOps.Editor
         public string type;
         public string apple_bundle_id;
         public string apple_store_id;
-        public string apple_team_id;     // ← ADDED: Apple Team ID from server
+        public string apple_team_id;
         public string android_package_name;
         public string[] android_sha256_fingerprints;
+        public string amazon_asin;
+        public string amazon_package_name;
+        public string microsoft_product_id;
+        public string samsung_seller_id;
         public string unity_game_id;
         public bool is_active;
+        public string ownership_status;
+        public string verification_method;
         
-        // Convenience properties for backward compatibility
+        // Convenience properties
         public string appleBundleId => apple_bundle_id;
         public string iosAppStoreId => apple_store_id;
-        public string appleTeamId => apple_team_id;    // ← ADDED: Convenience property for Apple Team ID
+        public string appleTeamId => apple_team_id;
         public string androidPackageName => android_package_name;
         public string[] androidSha256Fingerprints => android_sha256_fingerprints;
         public string unityGameId => unity_game_id;
@@ -543,6 +552,12 @@ namespace BoostOps.Editor
         // BoostOps Server Configuration
         private const string BOOSTOPS_SERVER_URL = "https://unity-app.boostops.io"; // Unity Auth Server Production URL
         private const string BOOSTOPS_API_SERVER_URL = "https://unity-api.boostops.io"; // Unity API Server Production URL
+        
+        /// <summary>
+        /// Project-scoped EditorPrefs key. Uses Application.dataPath to isolate
+        /// per-project settings so different Unity projects don't share cached state.
+        /// </summary>
+        private static string PK(string suffix) => $"BoostOps_{Application.dataPath}_{suffix}";
         
         // UI and project state
         private string projectSlug = "";
@@ -804,7 +819,7 @@ namespace BoostOps.Editor
         private int selectedTab = -1; // No tab selected initially
         private string[] tabs => isLocalConfigMode 
             ? new string[] { "Overview", "Links", "Cross-Promo" }
-            : new string[] { "Overview", "Links", "Cross-Promo", "Attribution", "Integrations" };
+            : new string[] { "Overview", "Links", "Cross-Promo", "Integrations" };
         
         // Link Configuration fields
         private string dynamicLinkUrl = ""; // Legacy - migrating to config asset
@@ -1265,18 +1280,11 @@ namespace BoostOps.Editor
             }, 2);
             chipsContainer.Add(crossPromoChip);
             
-            // Attribution chip
-            var attributionChip = CreateFeatureStatusChip("Attribution", attributionStatus, () => {
-                selectedTab = 3;
-                ShowAttributionPanel();
-            }, 3);
-            chipsContainer.Add(attributionChip);
-            
             // Integrations chip (navigation only, no modes)
             var integrationsChip = CreateNavigationChip("🔌 Integrations", () => {
-                selectedTab = 4;
+                selectedTab = 3;
                 ShowIntegrationsPanel();
-            }, 4);
+            }, 3);
             chipsContainer.Add(integrationsChip);
             
             featuresRow.Add(chipsContainer);
@@ -1774,10 +1782,10 @@ namespace BoostOps.Editor
                     ClearRemoteCampaignCache();
                     
                     // Clear runtime config cache to force fresh lookup
-                    EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_JSON");
-                    EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Key");
-                    EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Timestamp");
-                    EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Provider");
+                    EditorPrefs.DeleteKey(PK("RuntimeConfig_JSON"));
+                    EditorPrefs.DeleteKey(PK("RuntimeConfig_Key"));
+                    EditorPrefs.DeleteKey(PK("RuntimeConfig_Timestamp"));
+                    EditorPrefs.DeleteKey(PK("RuntimeConfig_Provider"));
                     
                     cachedSourceProject = null;
                     
@@ -1827,8 +1835,7 @@ namespace BoostOps.Editor
                     case 0: ShowOverviewPanel(); break;
                     case 1: ShowLinksPanel(); break;
                     case 2: ShowCrossPromoPanel(); break;
-                    case 3: ShowAttributionPanel(); break;
-                    case 4: ShowIntegrationsPanel(); break;
+                    case 3: ShowIntegrationsPanel(); break;
                 }
             });
         }
@@ -1842,15 +1849,15 @@ namespace BoostOps.Editor
         
         void SaveFeatureModeStates()
         {
-            EditorPrefs.SetInt("BoostOps_LinksMode", (int)linksMode);
-            EditorPrefs.SetInt("BoostOps_CrossPromoMode", (int)crossPromoMode);
-            EditorPrefs.SetInt("BoostOps_LinksStatus", (int)linksStatus);
-            EditorPrefs.SetInt("BoostOps_CrossPromoStatus", (int)crossPromoStatus);
-            EditorPrefs.SetInt("BoostOps_AttributionStatus", (int)attributionStatus);
-            EditorPrefs.SetInt("BoostOps_LinksServerRevision", linksServerRevision);
-            EditorPrefs.SetInt("BoostOps_CrossPromoServerRevision", crossPromoServerRevision);
-            EditorPrefs.SetString("BoostOps_LinksLastSync", linksLastSync);
-            EditorPrefs.SetString("BoostOps_CrossPromoLastSync", crossPromoLastSync);
+            EditorPrefs.SetInt(PK("LinksMode"), (int)linksMode);
+            EditorPrefs.SetInt(PK("CrossPromoMode"), (int)crossPromoMode);
+            EditorPrefs.SetInt(PK("LinksStatus"), (int)linksStatus);
+            EditorPrefs.SetInt(PK("CrossPromoStatus"), (int)crossPromoStatus);
+            EditorPrefs.SetInt(PK("AttributionStatus"), (int)attributionStatus);
+            EditorPrefs.SetInt(PK("LinksServerRevision"), linksServerRevision);
+            EditorPrefs.SetInt(PK("CrossPromoServerRevision"), crossPromoServerRevision);
+            EditorPrefs.SetString(PK("LinksLastSync"), linksLastSync);
+            EditorPrefs.SetString(PK("CrossPromoLastSync"), crossPromoLastSync);
             
             // Also save cross-promo mode to project settings for runtime access
             var settings = BoostOpsProjectSettings.GetOrCreateSettings();
@@ -1870,18 +1877,18 @@ namespace BoostOps.Editor
             else
             {
                 // In Config File Generator mode, load saved preferences
-                linksMode = (FeatureMode)EditorPrefs.GetInt("BoostOps_LinksMode", 0);
-                crossPromoMode = (FeatureMode)EditorPrefs.GetInt("BoostOps_CrossPromoMode", 0);
+                linksMode = (FeatureMode)EditorPrefs.GetInt(PK("LinksMode"), 0);
+                crossPromoMode = (FeatureMode)EditorPrefs.GetInt(PK("CrossPromoMode"), 0);
             }
             
             // Always load status and sync info regardless of mode
-            linksStatus = (FeatureStatus)EditorPrefs.GetInt("BoostOps_LinksStatus", 0);
-            crossPromoStatus = (FeatureStatus)EditorPrefs.GetInt("BoostOps_CrossPromoStatus", 0);
-            attributionStatus = (FeatureStatus)EditorPrefs.GetInt("BoostOps_AttributionStatus", 0);
-            linksServerRevision = EditorPrefs.GetInt("BoostOps_LinksServerRevision", 0);
-            crossPromoServerRevision = EditorPrefs.GetInt("BoostOps_CrossPromoServerRevision", 0);
-            linksLastSync = EditorPrefs.GetString("BoostOps_LinksLastSync", "");
-            crossPromoLastSync = EditorPrefs.GetString("BoostOps_CrossPromoLastSync", "");
+            linksStatus = (FeatureStatus)EditorPrefs.GetInt(PK("LinksStatus"), 0);
+            crossPromoStatus = (FeatureStatus)EditorPrefs.GetInt(PK("CrossPromoStatus"), 0);
+            attributionStatus = (FeatureStatus)EditorPrefs.GetInt(PK("AttributionStatus"), 0);
+            linksServerRevision = EditorPrefs.GetInt(PK("LinksServerRevision"), 0);
+            crossPromoServerRevision = EditorPrefs.GetInt(PK("CrossPromoServerRevision"), 0);
+            linksLastSync = EditorPrefs.GetString(PK("LinksLastSync"), "");
+            crossPromoLastSync = EditorPrefs.GetString(PK("CrossPromoLastSync"), "");
         }
 
         void UpdateAttributionStatus()
@@ -1969,10 +1976,7 @@ namespace BoostOps.Editor
             var crossPromoButton = CreateTabButtonWithStatus("Cross-Promo", crossPromoStatus, () => ShowCrossPromoPanel(), 2);
             headerContainer.Add(crossPromoButton);
 
-            var attributionButton = CreateTabButtonWithStatus("Attribution", attributionStatus, () => ShowAttributionPanel(), 3);
-            headerContainer.Add(attributionButton);
-
-            var integrationsButton = CreateTabButton("🔌 Integrations", () => ShowIntegrationsPanel(), 4);
+            var integrationsButton = CreateTabButton("🔌 Integrations", () => ShowIntegrationsPanel(), 3);
             headerContainer.Add(integrationsButton);
 
             // Right side elements
@@ -2090,10 +2094,7 @@ namespace BoostOps.Editor
             var crossPromoButton = CreateTabButtonWithStatus("Cross-Promo", crossPromoStatus, () => ShowCrossPromoPanel(), 2);
             headerContainer.Add(crossPromoButton);
 
-            var attributionButton = CreateTabButtonWithStatus("Attribution", attributionStatus, () => ShowAttributionPanel(), 3);
-            headerContainer.Add(attributionButton);
-
-            var integrationsButton = CreateTabButton("🔌 Integrations", () => ShowIntegrationsPanel(), 4);
+            var integrationsButton = CreateTabButton("🔌 Integrations", () => ShowIntegrationsPanel(), 3);
             headerContainer.Add(integrationsButton);
 
             // Right side elements
@@ -2213,18 +2214,14 @@ namespace BoostOps.Editor
         // Main panel methods for Cloud vs Local modes
         void ShowCloudPanel()
         {
-            // Cloud mode: Show cloud-managed features
-            // Default to Links panel (primary feature)
-            selectedTab = 1; // Links tab
-            ShowLinksPanel();
+            selectedTab = 0;
+            ShowOverviewPanel();
         }
         
         void ShowLocalConfigPanel()
         {
-            // Config File Generator mode: Generate config files for dynamic links without using cloud
-            // Default to Links panel
-            selectedTab = 1; // Links tab
-            ShowLinksPanel();
+            selectedTab = 0;
+            ShowOverviewPanel();
         }
         
         // Panel switching methods
@@ -2262,7 +2259,7 @@ namespace BoostOps.Editor
             if (crossPromoMode == FeatureMode.Managed)
             {
                 // Try to reload cached campaigns in case they were updated
-                string cachedJson = EditorPrefs.GetString("BoostOps_CachedRemoteCampaigns", "");
+                string cachedJson = EditorPrefs.GetString(PK("CachedRemoteCampaigns"), "");
                 if (!string.IsNullOrEmpty(cachedJson) && (cachedRemoteCampaigns == null || cachedRemoteCampaigns.Count == 0))
                 {
                     LogDebug("ShowCrossPromoPanel: Found cached campaigns in EditorPrefs but none loaded - reloading");
@@ -3241,8 +3238,7 @@ namespace BoostOps.Editor
                                 ShowCrossPromoPanel(); 
                                 break;
                             case 3: 
-                                LogDebug("Refreshing Attribution panel to show updated status");
-                                ShowAttributionPanel(); 
+                                ShowIntegrationsPanel(); 
                                 break;
                             default: 
                                 ShowOverviewPanel(); 
@@ -3486,7 +3482,7 @@ namespace BoostOps.Editor
             
             settingsContainer.Add(freqCapRow);
             
-            // Primary Store IDs (prominently displayed)
+            // Store IDs
             var primaryStoreHeader = new Label("Store IDs");
             primaryStoreHeader.style.fontSize = 14;
             primaryStoreHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
@@ -3501,7 +3497,7 @@ namespace BoostOps.Editor
             appleRow.style.marginBottom = 8;
             
             var appleLabel = new Label("Apple Store ID:");
-            appleLabel.style.minWidth = 120;
+            appleLabel.style.minWidth = 140;
             appleLabel.style.color = new Color(0.8f, 0.8f, 0.8f, 1f);
             appleRow.Add(appleLabel);
             
@@ -3519,7 +3515,7 @@ namespace BoostOps.Editor
             googleRow.style.marginBottom = 8;
             
             var googleLabel = new Label("Google Store ID:");
-            googleLabel.style.minWidth = 120;
+            googleLabel.style.minWidth = 140;
             googleLabel.style.color = new Color(0.8f, 0.8f, 0.8f, 1f);
             googleRow.Add(googleLabel);
             
@@ -3531,17 +3527,10 @@ namespace BoostOps.Editor
             
             settingsContainer.Add(googleRow);
             
-            // Advanced Store IDs section (read-only - cloud values only)
-            var storeIdsFoldout = new Foldout();
-            storeIdsFoldout.text = "Advanced Store IDs (Read-Only)";
-            storeIdsFoldout.style.marginTop = 10;
-            storeIdsFoldout.style.marginBottom = 5;
-            storeIdsFoldout.value = false; // Start collapsed
-            
             // Amazon Store ID (from cloud)
             var amazonRow = new VisualElement();
             amazonRow.style.flexDirection = FlexDirection.Row;
-            amazonRow.style.marginBottom = 5;
+            amazonRow.style.marginBottom = 8;
             
             var amazonLabel = new Label("Amazon Store ID:");
             amazonLabel.style.minWidth = 140;
@@ -3554,12 +3543,12 @@ namespace BoostOps.Editor
             amazonValue.style.flexGrow = 1;
             amazonRow.Add(amazonValue);
             
-            storeIdsFoldout.Add(amazonRow);
+            settingsContainer.Add(amazonRow);
             
             // Microsoft Store ID (from cloud)
             var windowsRow = new VisualElement();
             windowsRow.style.flexDirection = FlexDirection.Row;
-            windowsRow.style.marginBottom = 5;
+            windowsRow.style.marginBottom = 8;
             
             var windowsLabel = new Label("Microsoft Store ID:");
             windowsLabel.style.minWidth = 140;
@@ -3572,7 +3561,14 @@ namespace BoostOps.Editor
             windowsValue.style.flexGrow = 1;
             windowsRow.Add(windowsValue);
             
-            storeIdsFoldout.Add(windowsRow);
+            settingsContainer.Add(windowsRow);
+            
+            // Other Store IDs (read-only - cloud values only)
+            var storeIdsFoldout = new Foldout();
+            storeIdsFoldout.text = "Other Store IDs (Read-Only)";
+            storeIdsFoldout.style.marginTop = 10;
+            storeIdsFoldout.style.marginBottom = 5;
+            storeIdsFoldout.value = false; // Start collapsed
             
             // Samsung Store ID (from cloud)
             var samsungRow = new VisualElement();
@@ -6096,12 +6092,12 @@ namespace BoostOps.Editor
         
         void SaveQRDomainSelection()
         {
-            EditorPrefs.SetString("BoostOps_SelectedQRDomain", selectedQRDomain);
+            EditorPrefs.SetString(PK("SelectedQRDomain"), selectedQRDomain);
         }
         
         void LoadQRDomainSelection()
         {
-            selectedQRDomain = EditorPrefs.GetString("BoostOps_SelectedQRDomain", "");
+            selectedQRDomain = EditorPrefs.GetString(PK("SelectedQRDomain"), "");
         }
         
         void RefreshQRSection()
@@ -6288,14 +6284,14 @@ namespace BoostOps.Editor
             // PRIORITY 1: Critical Issues (Registration & Platform Setup)
             BuildCriticalIssuesSection();
             
-            // PRIORITY 2: Project Status (when everything is working)
-            BuildProjectStatusSection();
-            
-            // PRIORITY 3: Credentials Section (detailed view)
+            // PRIORITY 2: Credentials Section
             BuildCredentialsSection();
             
-            // Platform Setup Section (detailed view)
-            BuildPlatformSetupSection();
+            // PRIORITY 3: Combined Project & Platform Status
+            BuildProjectPlatformSection();
+            
+            // PRIORITY 4: Events Being Tracked
+            BuildEventsTrackedSection();
             
             // ✅ REMOVED: Features Section (redundant with navigation tabs)
             // BuildFeaturesSection();
@@ -6541,54 +6537,82 @@ namespace BoostOps.Editor
             contentContainer.Add(criticalCard);
         }
 
-        void BuildProjectStatusSection()
+        void BuildProjectPlatformSection()
         {
             var settings = BoostOpsProjectSettings.GetOrCreateSettings();
-            bool hasProjectKey = !string.IsNullOrEmpty(settings.projectKey);
-            bool hasAppStoreId = !string.IsNullOrEmpty(settings.appleAppStoreId);
-            bool hasSHA256 = !string.IsNullOrEmpty(settings.androidCertFingerprint);
             
-            // Only show detailed status when setup is complete
-            if (!hasProjectKey || !hasAppStoreId || !hasSHA256)
-            {
-                return; // Critical issues are shown above, don't duplicate here
-            }
-            
-            var statusCard = CreateCard("✅ Project Status", "📊");
-            statusCard.style.borderTopColor = new Color(0.2f, 0.8f, 0.2f, 1f); // Green border
-            statusCard.style.borderTopWidth = 3f;
+            var card = CreateCard("Project & Platforms", "📱");
+            card.style.borderTopColor = new Color(0.2f, 0.8f, 0.2f, 1f);
+            card.style.borderTopWidth = 3f;
 
             // Project Name
             var projectName = Application.productName;
             var projectRow = CreateStatusRow("Project Name", projectName, !string.IsNullOrEmpty(projectName));
-            statusCard.Add(projectRow);
+            card.Add(projectRow);
 
-            // Domain Prefix (Project Slug)
+            // Domain Prefix
             var projectSlug = settings.projectSlug;
             var slugRow = CreateStatusRow("Domain Prefix", 
                 !string.IsNullOrEmpty(projectSlug) ? projectSlug : "Not configured", 
                 !string.IsNullOrEmpty(projectSlug));
-            statusCard.Add(slugRow);
+            card.Add(slugRow);
 
-            // Bundle ID (iOS)
-            #if UNITY_2021_2_OR_NEWER
-            var bundleId = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.iOS);
-            #else
-            var bundleId = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.iOS);
-            #endif
-            var bundleRow = CreateStatusRow("iOS Bundle ID", bundleId, !string.IsNullOrEmpty(bundleId) && bundleId != "com.unity.template.mobile");
-            statusCard.Add(bundleRow);
+            // Separator
+            var separator = new VisualElement();
+            separator.style.height = 1;
+            separator.style.backgroundColor = new Color(0.35f, 0.35f, 0.35f, 1f);
+            separator.style.marginTop = 8;
+            separator.style.marginBottom = 8;
+            card.Add(separator);
 
-            // Package Name (Android)
+            // iOS
+            bool hasAppStoreId = !string.IsNullOrEmpty(settings.appleAppStoreId);
+            card.Add(CreateStatusRow("iOS", 
+                hasAppStoreId ? $"Ready (ID: {settings.appleAppStoreId})" : "Not configured",
+                hasAppStoreId));
+
+            // Android
             #if UNITY_2021_2_OR_NEWER
             var packageName = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android);
             #else
             var packageName = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
             #endif
-            var packageRow = CreateStatusRow("Google Store ID", packageName, !string.IsNullOrEmpty(packageName) && packageName != "com.unity.template.mobile");
-            statusCard.Add(packageRow);
+            bool hasAndroid = !string.IsNullOrEmpty(packageName) && packageName != "com.unity.template.mobile";
+            card.Add(CreateStatusRow("Android", 
+                hasAndroid ? $"Ready ({packageName})" : "Not configured",
+                hasAndroid));
 
-            contentContainer.Add(statusCard);
+            // Amazon
+            bool hasAmazon = !string.IsNullOrEmpty(settings.amazonStoreId);
+            card.Add(CreateStatusRow("Amazon", 
+                hasAmazon ? $"Ready ({settings.amazonStoreId})" : "Not configured",
+                hasAmazon));
+
+            // Microsoft
+            bool hasMicrosoft = !string.IsNullOrEmpty(settings.microsoftStoreId);
+            card.Add(CreateStatusRow("Microsoft", 
+                hasMicrosoft ? $"Ready (ID: {settings.microsoftStoreId})" : "Not configured",
+                hasMicrosoft));
+
+            contentContainer.Add(card);
+        }
+        
+        void BuildEventsTrackedSection()
+        {
+            var card = CreateCard("Events Being Tracked", "📊");
+            
+            var eventsLabel = new Label(
+                "• App Open (with first_open flag for installs)\n" +
+                "• Purchases (revenue tracking)\n" +
+                "• Cross-Promo Impressions\n" +
+                "• Cross-Promo Clicks\n" +
+                "• Deep Link Opens");
+            eventsLabel.style.fontSize = 11;
+            eventsLabel.style.whiteSpace = WhiteSpace.Normal;
+            eventsLabel.style.color = new Color(0.85f, 0.85f, 0.85f, 1f);
+            card.Add(eventsLabel);
+            
+            contentContainer.Add(card);
         }
 
         void BuildCredentialsSection()
@@ -6649,38 +6673,7 @@ namespace BoostOps.Editor
             contentContainer.Add(credentialsCard);
         }
 
-        void BuildPlatformSetupSection()
-        {
-            var settings = BoostOpsProjectSettings.GetInstance();
-            
-            var platformCard = CreateCard("Platform Setup", "📱");
-
-            // iOS Status
-            bool hasAppStoreId = settings != null && !string.IsNullOrEmpty(settings.appleAppStoreId);
-            string iosStatus = hasAppStoreId ? 
-                $"✅ Ready (ID: {settings.appleAppStoreId})" : 
-                "⚠️ Missing App Store ID";
-            var iosRow = CreateActionRow("iOS", 
-                iosStatus, 
-                hasAppStoreId,
-                () => ShowLinksPanel(),
-                "Configure");
-            platformCard.Add(iosRow);
-
-            // Android Status  
-            bool hasFingerprint = settings != null && !string.IsNullOrEmpty(settings.androidCertFingerprint);
-            string androidStatus = hasFingerprint ? 
-                $"✅ Ready (SHA: {settings.androidCertFingerprint.Substring(0, Math.Min(12, settings.androidCertFingerprint.Length))}...)" : 
-                "⚠️ Missing SHA-256";
-            var androidRow = CreateActionRow("Android",
-                androidStatus,
-                hasFingerprint,
-                () => ShowLinksPanel(),
-                "Configure");
-            platformCard.Add(androidRow);
-
-            contentContainer.Add(platformCard);
-        }
+        // BuildPlatformSetupSection removed - merged into BuildProjectPlatformSection
 
         void BuildFeaturesSection()
         {
@@ -9482,6 +9475,38 @@ namespace BoostOps.Editor
                 "Read-only field showing the package name from Player Settings. Used for Google Play Store cross-promotion analytics.");
             globalContainer.Add(androidPackageRow);
             
+            // Amazon Store ID field
+            var amazonStoreIdField = new TextField();
+            amazonStoreIdField.value = projectSettings.amazonStoreId ?? "";
+            amazonStoreIdField.tooltip = "Enter Amazon App Store ASIN (e.g., B01N5678XY)";
+            amazonStoreIdField.RegisterValueChangedCallback(evt => {
+                var settings = BoostOpsProjectSettings.GetOrCreateSettings();
+                settings.amazonStoreId = evt.newValue;
+                UnityEditor.EditorUtility.SetDirty(settings);
+                UnityEditor.AssetDatabase.SaveAssets();
+                SaveCrossPromoChanges(autoGenerate: false);
+            });
+            
+            var amazonStoreIdRow = CreateLabelFieldRowWithInfo("Amazon Store ID:", amazonStoreIdField, 
+                "Amazon App Store identifier for cross-promotion on Fire tablets and Amazon devices.");
+            globalContainer.Add(amazonStoreIdRow);
+            
+            // Microsoft Store ID field
+            var microsoftStoreIdField = new TextField();
+            microsoftStoreIdField.value = projectSettings.microsoftStoreId ?? "";
+            microsoftStoreIdField.tooltip = "Enter Microsoft Store Product ID (e.g., 9WZDNCRFJ3TJ)";
+            microsoftStoreIdField.RegisterValueChangedCallback(evt => {
+                var settings = BoostOpsProjectSettings.GetOrCreateSettings();
+                settings.microsoftStoreId = evt.newValue;
+                UnityEditor.EditorUtility.SetDirty(settings);
+                UnityEditor.AssetDatabase.SaveAssets();
+                SaveCrossPromoChanges(autoGenerate: false);
+            });
+            
+            var microsoftStoreIdRow = CreateLabelFieldRowWithInfo("Microsoft Store ID:", microsoftStoreIdField, 
+                "Microsoft Store product ID for cross-promotion on Windows.");
+            globalContainer.Add(microsoftStoreIdRow);
+            
             // Rotation type field
             var rotationField = new EnumField(crossPromoTable.rotation);
             rotationField.RegisterValueChangedCallback(evt => {
@@ -9577,10 +9602,10 @@ namespace BoostOps.Editor
             
             // Microsoft Store ID
             var sourceWindowsField = new TextField();
-            sourceWindowsField.value = projectSettings.windowsStoreId ?? "";
+            sourceWindowsField.value = projectSettings.microsoftStoreId ?? "";
             sourceWindowsField.RegisterValueChangedCallback(evt => {
                 // Update project settings (single source of truth)
-                projectSettings.windowsStoreId = evt.newValue;
+                projectSettings.microsoftStoreId = evt.newValue;
                 UnityEditor.EditorUtility.SetDirty(projectSettings);
                 UnityEditor.AssetDatabase.SaveAssets();
                 SaveCrossPromoChanges(autoGenerate: false);
@@ -9925,15 +9950,8 @@ namespace BoostOps.Editor
                 UpdateGameId(target);
             }, index, "android");
             
-            // Advanced Store IDs (collapsible)
-            var advancedStoreSection = new Foldout();
-            advancedStoreSection.text = "Advanced Store IDs";
-            advancedStoreSection.value = false; // Start collapsed
-            advancedStoreSection.style.marginTop = 5;
-            advancedStoreSection.style.marginBottom = 5;
-            
             // Amazon Store ID
-            BuildGameFieldWithVerification(advancedStoreSection, "Amazon Store ID", target.amazonStoreId, (value) => {
+            BuildGameFieldWithVerification(leftColumn, "Amazon Store ID", target.amazonStoreId, (value) => {
                 target.amazonStoreId = value;
                 SaveCrossPromoChanges(autoGenerate: false);
                 VerifyAmazonStoreIdDebounced(value, index);
@@ -9942,29 +9960,30 @@ namespace BoostOps.Editor
             
             // Microsoft Store ID
             var windowsField = new TextField();
-            windowsField.value = target.windowsStoreId ?? "";
+            windowsField.value = target.microsoftStoreId ?? "";
             windowsField.tooltip = "Enter Microsoft Store Product ID (e.g., 9WZDNCRFJ3TJ)";
-            windowsField.style.width = 200; // Match Amazon field width
+            windowsField.style.width = 200;
             windowsField.RegisterValueChangedCallback(evt => {
-                target.windowsStoreId = evt.newValue;
+                target.microsoftStoreId = evt.newValue;
                 SaveCrossPromoChanges(autoGenerate: false);
                 UpdateGameId(target);
             });
             var windowsRow = CreateLabelFieldRow("Microsoft Store ID:", windowsField);
             windowsRow.style.marginBottom = 5;
-            var windowsLabel = windowsRow.Q<Label>();
-            if (windowsLabel != null)
-            {
-                windowsLabel.style.width = 160;
-                windowsLabel.style.fontSize = 11;
-            }
-            advancedStoreSection.Add(windowsRow);
+            leftColumn.Add(windowsRow);
+            
+            // Other Store IDs (collapsible)
+            var advancedStoreSection = new Foldout();
+            advancedStoreSection.text = "Other Store IDs";
+            advancedStoreSection.value = false; // Start collapsed
+            advancedStoreSection.style.marginTop = 5;
+            advancedStoreSection.style.marginBottom = 5;
             
             // Samsung Store ID
             var samsungField = new TextField();
             samsungField.value = target.samsungStoreId ?? "";
             samsungField.tooltip = "Enter Samsung Galaxy Store ID";
-            samsungField.style.width = 200; // Match Amazon field width
+            samsungField.style.width = 200;
             samsungField.RegisterValueChangedCallback(evt => {
                 target.samsungStoreId = evt.newValue;
                 SaveCrossPromoChanges(autoGenerate: false);
@@ -9972,12 +9991,6 @@ namespace BoostOps.Editor
             });
             var samsungRow = CreateLabelFieldRow("Samsung Store ID:", samsungField);
             samsungRow.style.marginBottom = 5;
-            var samsungLabel = samsungRow.Q<Label>();
-            if (samsungLabel != null)
-            {
-                samsungLabel.style.width = 160;
-                samsungLabel.style.fontSize = 11;
-            }
             advancedStoreSection.Add(samsungRow);
             
             leftColumn.Add(advancedStoreSection);
@@ -11314,7 +11327,7 @@ namespace BoostOps.Editor
                     errors.Add($"{prefix}: Headline is required");
                 
                 // Check platform configurations
-                if (!target.HasAndroidConfig() && !target.HasIOSConfig() && !target.HasWindowsConfig() && !target.HasAmazonConfig() && !target.HasSamsungConfig())
+                if (!target.HasAndroidConfig() && !target.HasIOSConfig() && !target.HasMicrosoftConfig() && !target.HasAmazonConfig() && !target.HasSamsungConfig())
                     errors.Add($"{prefix}: At least one store ID (iOS, Android, Windows, Amazon, or Samsung Galaxy Store) is required");
                 
                 // Validate weight
@@ -11361,7 +11374,7 @@ namespace BoostOps.Editor
                 androidPackageId = "",
                 iosAppStoreId = "",
                 iosBundleId = "",
-                windowsStoreId = "",
+                microsoftStoreId = "",
                 amazonStoreId = "",
                 samsungStoreId = "",
                 weight = 100,
@@ -11566,7 +11579,7 @@ namespace BoostOps.Editor
                 var target = crossPromoTable.targets[i];
                 bool hasAnyId = !string.IsNullOrEmpty(target.iosAppStoreId) ||
                               !string.IsNullOrEmpty(target.androidPackageId) ||
-                              !string.IsNullOrEmpty(target.windowsStoreId) ||
+                              !string.IsNullOrEmpty(target.microsoftStoreId) ||
                               !string.IsNullOrEmpty(target.amazonStoreId) ||
                               !string.IsNullOrEmpty(target.samsungStoreId);
                 
@@ -12190,8 +12203,7 @@ namespace BoostOps.Editor
                             case 0: ShowOverviewPanel(); break;
                             case 1: ShowLinksPanel(); break;
                             case 2: ShowCrossPromoPanel(); break;
-                            case 3: ShowAttributionPanel(); break;
-                            case 4: ShowIntegrationsPanel(); break;
+                            case 3: ShowIntegrationsPanel(); break;
                             default: ShowOverviewPanel(); break;
                         }
                     }
@@ -12404,6 +12416,32 @@ namespace BoostOps.Editor
                         Debug.Log($"[BoostOps] 🔍 After assignment - projectSettings.projectId: '{projectSettings.projectId}'");
                         Debug.Log($"[BoostOps] 🔍 After assignment - projectSettings.projectKey: '{projectSettings.projectKey}'");
                         
+                        // Sync store IDs from server app_stores to project settings
+                        if (lookupResponse.app_stores != null)
+                        {
+                            foreach (var store in lookupResponse.app_stores)
+                            {
+                                if (store == null) continue;
+                                switch (store.type)
+                                {
+                                    case "MICROSOFT_STORE":
+                                        if (!string.IsNullOrEmpty(store.microsoft_product_id))
+                                        {
+                                            projectSettings.microsoftStoreId = store.microsoft_product_id;
+                                            Debug.Log($"[BoostOps] 💾 Synced Microsoft Store ID from server: {store.microsoft_product_id}");
+                                        }
+                                        break;
+                                    case "AMAZON_STORE":
+                                        if (!string.IsNullOrEmpty(store.amazon_package_name) && string.IsNullOrEmpty(projectSettings.amazonStoreId))
+                                        {
+                                            projectSettings.amazonStoreId = store.amazon_package_name;
+                                            Debug.Log($"[BoostOps] 💾 Synced Amazon Store ID from server: {store.amazon_package_name}");
+                                        }
+                                        break;
+                                }
+                            }
+                        }
+                        
                         EditorUtility.SetDirty(projectSettings);
                         AssetDatabase.SaveAssets();
                         AssetDatabase.Refresh();
@@ -12492,8 +12530,16 @@ namespace BoostOps.Editor
                                 type = was.type,
                                 apple_bundle_id = was.apple_bundle_id,
                                 apple_store_id = was.apple_store_id,
+                                apple_team_id = was.apple_team_id,
                                 android_package_name = was.android_package_name,
-                                android_sha256_fingerprints = was.android_sha256_fingerprints
+                                android_sha256_fingerprints = was.android_sha256_fingerprints,
+                                amazon_asin = was.amazon_asin,
+                                amazon_package_name = was.amazon_package_name,
+                                microsoft_product_id = was.microsoft_product_id,
+                                samsung_seller_id = was.samsung_seller_id,
+                                is_active = was.is_active,
+                                ownership_status = was.ownership_status,
+                                verification_method = was.verification_method
                             }).ToArray()
                         } : null,
                         message = lookupResponse.message,
@@ -13053,12 +13099,21 @@ namespace BoostOps.Editor
                                             projectSettings.androidPackageName = appStore.android_package_name;
                                             Debug.Log($"[BoostOps] 🤖 Android Package Name saved: {appStore.android_package_name}");
                                             
-                                            // Also save Android SHA256 fingerprint if present
                                             if (appStore.android_sha256_fingerprints != null && appStore.android_sha256_fingerprints.Length > 0)
                                             {
                                                 projectSettings.androidCertFingerprint = appStore.android_sha256_fingerprints[0];
                                                 Debug.Log($"[BoostOps] 🔐 Android SHA256 fingerprint saved");
                                             }
+                                        }
+                                        else if (appStore.type == "MICROSOFT_STORE" && !string.IsNullOrEmpty(appStore.microsoft_product_id))
+                                        {
+                                            projectSettings.microsoftStoreId = appStore.microsoft_product_id;
+                                            Debug.Log($"[BoostOps] 🪟 Microsoft Store ID saved: {appStore.microsoft_product_id}");
+                                        }
+                                        else if (appStore.type == "AMAZON_STORE" && !string.IsNullOrEmpty(appStore.amazon_package_name))
+                                        {
+                                            projectSettings.amazonStoreId = appStore.amazon_package_name;
+                                            Debug.Log($"[BoostOps] 📦 Amazon Store ID saved: {appStore.amazon_package_name}");
                                         }
                                     }
                                 }
@@ -13133,7 +13188,7 @@ namespace BoostOps.Editor
                                             case 0: ShowOverviewPanel(); break;
                                             case 1: ShowLinksPanel(); break;
                                             case 2: ShowCrossPromoPanel(); break;
-                                            case 3: ShowAttributionPanel(); break;
+                                            case 3: ShowIntegrationsPanel(); break;
                                             default: ShowOverviewPanel(); break;
                                         }
                                     }
@@ -13254,8 +13309,7 @@ namespace BoostOps.Editor
                                             case 0: ShowOverviewPanel(); break;
                                             case 1: ShowLinksPanel(); break;
                                             case 2: ShowCrossPromoPanel(); break;
-                                            case 3: ShowAttributionPanel(); break;
-                                            case 4: ShowIntegrationsPanel(); break;
+                                            case 3: ShowIntegrationsPanel(); break;
                                             default: ShowOverviewPanel(); break;
                                         }
                                     };
@@ -13271,10 +13325,10 @@ namespace BoostOps.Editor
                                 ClearRemoteCampaignCache();
                                 
                                 // Also clear runtime config cache to prevent showing stale data
-                                EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_JSON");
-                                EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Key");
-                                EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Timestamp");
-                                EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Provider");
+                                EditorPrefs.DeleteKey(PK("RuntimeConfig_JSON"));
+                                EditorPrefs.DeleteKey(PK("RuntimeConfig_Key"));
+                                EditorPrefs.DeleteKey(PK("RuntimeConfig_Timestamp"));
+                                EditorPrefs.DeleteKey(PK("RuntimeConfig_Provider"));
                                 
                                 // Clear cached source project data
                                 cachedSourceProject = null;
@@ -15612,7 +15666,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
         void LoadVerificationStatus()
         {
             // Load iOS verification status
-            string iosStatusJson = EditorPrefs.GetString($"BoostOps_{Application.dataPath}_IOSVerificationStatus", "");
+            string iosStatusJson = EditorPrefs.GetString(PK("IOSVerificationStatus"), "");
             if (!string.IsNullOrEmpty(iosStatusJson))
             {
                 try
@@ -15640,7 +15694,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
             }
             
             // Load Android verification status
-            string androidStatusJson = EditorPrefs.GetString($"BoostOps_{Application.dataPath}_AndroidVerificationStatus", "");
+            string androidStatusJson = EditorPrefs.GetString(PK("AndroidVerificationStatus"), "");
             if (!string.IsNullOrEmpty(androidStatusJson))
             {
                 try
@@ -15668,7 +15722,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
             }
             
             // Load Amazon verification status
-            string amazonStatusJson = EditorPrefs.GetString($"BoostOps_{Application.dataPath}_AmazonVerificationStatus", "");
+            string amazonStatusJson = EditorPrefs.GetString(PK("AmazonVerificationStatus"), "");
             if (!string.IsNullOrEmpty(amazonStatusJson))
             {
                 try
@@ -15696,7 +15750,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
             }
             
             // Load last verified values
-            string iosValuesJson = EditorPrefs.GetString($"BoostOps_{Application.dataPath}_IOSLastVerifiedValues", "");
+            string iosValuesJson = EditorPrefs.GetString(PK("IOSLastVerifiedValues"), "");
             if (!string.IsNullOrEmpty(iosValuesJson))
             {
                 try
@@ -15723,7 +15777,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                 }
             }
             
-            string androidValuesJson = EditorPrefs.GetString($"BoostOps_{Application.dataPath}_AndroidLastVerifiedValues", "");
+            string androidValuesJson = EditorPrefs.GetString(PK("AndroidLastVerifiedValues"), "");
             if (!string.IsNullOrEmpty(androidValuesJson))
             {
                 try
@@ -15750,7 +15804,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                 }
             }
             
-            string amazonValuesJson = EditorPrefs.GetString($"BoostOps_{Application.dataPath}_AmazonLastVerifiedValues", "");
+            string amazonValuesJson = EditorPrefs.GetString(PK("AmazonLastVerifiedValues"), "");
             if (!string.IsNullOrEmpty(amazonValuesJson))
             {
                 try
@@ -15789,7 +15843,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                     iosStatusLines.Add($"{kvp.Key}={kvp.Value}");
                 }
                 string iosStatusJson = string.Join("\n", iosStatusLines);
-                EditorPrefs.SetString($"BoostOps_{Application.dataPath}_IOSVerificationStatus", iosStatusJson);
+                EditorPrefs.SetString(PK("IOSVerificationStatus"), iosStatusJson);
             }
             catch (System.Exception ex)
             {
@@ -15805,7 +15859,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                     androidStatusLines.Add($"{kvp.Key}={kvp.Value}");
                 }
                 string androidStatusJson = string.Join("\n", androidStatusLines);
-                EditorPrefs.SetString($"BoostOps_{Application.dataPath}_AndroidVerificationStatus", androidStatusJson);
+                EditorPrefs.SetString(PK("AndroidVerificationStatus"), androidStatusJson);
             }
             catch (System.Exception ex)
             {
@@ -15821,7 +15875,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                     amazonStatusLines.Add($"{kvp.Key}={kvp.Value}");
                 }
                 string amazonStatusJson = string.Join("\n", amazonStatusLines);
-                EditorPrefs.SetString($"BoostOps_{Application.dataPath}_AmazonVerificationStatus", amazonStatusJson);
+                EditorPrefs.SetString(PK("AmazonVerificationStatus"), amazonStatusJson);
             }
             catch (System.Exception ex)
             {
@@ -15837,7 +15891,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                     iosValuesLines.Add($"{kvp.Key}={kvp.Value}");
                 }
                 string iosValuesJson = string.Join("\n", iosValuesLines);
-                EditorPrefs.SetString($"BoostOps_{Application.dataPath}_IOSLastVerifiedValues", iosValuesJson);
+                EditorPrefs.SetString(PK("IOSLastVerifiedValues"), iosValuesJson);
             }
             catch (System.Exception ex)
             {
@@ -15852,7 +15906,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                     androidValuesLines.Add($"{kvp.Key}={kvp.Value}");
                 }
                 string androidValuesJson = string.Join("\n", androidValuesLines);
-                EditorPrefs.SetString($"BoostOps_{Application.dataPath}_AndroidLastVerifiedValues", androidValuesJson);
+                EditorPrefs.SetString(PK("AndroidLastVerifiedValues"), androidValuesJson);
             }
             catch (System.Exception ex)
             {
@@ -15867,7 +15921,7 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                     amazonValuesLines.Add($"{kvp.Key}={kvp.Value}");
                 }
                 string amazonValuesJson = string.Join("\n", amazonValuesLines);
-                EditorPrefs.SetString($"BoostOps_{Application.dataPath}_AmazonLastVerifiedValues", amazonValuesJson);
+                EditorPrefs.SetString(PK("AmazonLastVerifiedValues"), amazonValuesJson);
             }
             catch (System.Exception ex)
             {
@@ -16443,7 +16497,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
                 case "amazon":
                     return !string.IsNullOrEmpty(settings.amazonStoreId) ? settings.amazonStoreId : null;
                 case "microsoft":
-                    return !string.IsNullOrEmpty(settings.windowsStoreId) ? settings.windowsStoreId : null;
+                    return !string.IsNullOrEmpty(settings.microsoftStoreId) ? settings.microsoftStoreId : null;
                 case "samsung":
                     return !string.IsNullOrEmpty(settings.samsungStoreId) ? settings.samsungStoreId : null;
                 default:
@@ -16500,10 +16554,10 @@ https://developer.android.com/training/app-links/verify-site-associations";
                         storeUrls.amazon = $"https://www.amazon.com/gp/mas/dl/android?p={target.amazonStoreId}";
                     storeIds.amazon = target.amazonStoreId;
                 }
-                if (!string.IsNullOrEmpty(target.windowsStoreId))
+                if (!string.IsNullOrEmpty(target.microsoftStoreId))
                 {
-                    storeUrls.microsoft = $"ms-windows-store://pdp/?productid={target.windowsStoreId}";
-                    storeIds.microsoft = target.windowsStoreId;
+                    storeUrls.microsoft = $"ms-windows-store://pdp/?productid={target.microsoftStoreId}";
+                    storeIds.microsoft = target.microsoftStoreId;
                 }
                 if (!string.IsNullOrEmpty(target.samsungStoreId))
                 {
@@ -16601,7 +16655,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
             var googleStoreId = GetProjectSettingsStoreId("google") ?? androidPackageName;
             var amazonStoreId = GetProjectSettingsStoreId("amazon");
             var samsungStoreId = GetProjectSettingsStoreId("samsung");
-            var windowsStoreId = GetProjectSettingsStoreId("microsoft");
+            var microsoftStoreId = GetProjectSettingsStoreId("microsoft");
             
             // Build structured store data
             var storeUrls = new StoreUrlsJson();
@@ -16631,10 +16685,10 @@ https://developer.android.com/training/app-links/verify-site-associations";
                 storeUrls.samsung = $"samsungapps://ProductDetail/{samsungStoreId}";
                 storeIds.samsung = samsungStoreId;
             }
-            if (!string.IsNullOrEmpty(windowsStoreId))
+            if (!string.IsNullOrEmpty(microsoftStoreId))
             {
-                storeUrls.microsoft = $"ms-windows-store://pdp/?productid={windowsStoreId}";
-                storeIds.microsoft = windowsStoreId;
+                storeUrls.microsoft = $"ms-windows-store://pdp/?productid={microsoftStoreId}";
+                storeIds.microsoft = microsoftStoreId;
             }
             
             // Platform IDs
@@ -16810,13 +16864,13 @@ https://developer.android.com/training/app-links/verify-site-associations";
     
     void LoadProjectSlug()
     {
-        projectSlug = EditorPrefs.GetString("BoostOps_ProjectSlug", "");
+        projectSlug = EditorPrefs.GetString(PK("ProjectSlug"), "");
         ValidateProjectSlug();
     }
     
     void SaveProjectSlug()
     {
-        EditorPrefs.SetString("BoostOps_ProjectSlug", projectSlug);
+        EditorPrefs.SetString(PK("ProjectSlug"), projectSlug);
     }
     
 
@@ -16825,12 +16879,12 @@ https://developer.android.com/training/app-links/verify-site-associations";
     
     void LoadDynamicLinkUrl()
     {
-        dynamicLinkUrl = EditorPrefs.GetString("BoostOps_DynamicLinkUrl", "");
+        dynamicLinkUrl = EditorPrefs.GetString(PK("DynamicLinkUrl"), "");
     }
     
     void SaveDynamicLinkUrl()
     {
-        EditorPrefs.SetString("BoostOps_DynamicLinkUrl", dynamicLinkUrl);
+        EditorPrefs.SetString(PK("DynamicLinkUrl"), dynamicLinkUrl);
     }
     
     void LoadDynamicLinksConfig()
@@ -16861,12 +16915,12 @@ https://developer.android.com/training/app-links/verify-site-associations";
     
     void LoadAndroidCertFingerprint()
     {
-        androidCertFingerprint = EditorPrefs.GetString("BoostOps_AndroidCertFingerprint", "");
+        androidCertFingerprint = EditorPrefs.GetString(PK("AndroidCertFingerprint"), "");
     }
     
     void SaveAndroidCertFingerprint()
     {
-        EditorPrefs.SetString("BoostOps_AndroidCertFingerprint", androidCertFingerprint);
+        EditorPrefs.SetString(PK("AndroidCertFingerprint"), androidCertFingerprint);
         
         // Also save to project settings so Overview page can read it
         var settings = BoostOpsProjectSettings.GetOrCreateSettings();
@@ -16877,12 +16931,12 @@ https://developer.android.com/training/app-links/verify-site-associations";
     
     void LoadAppleAppStoreId()
     {
-        iosAppStoreId = EditorPrefs.GetString("BoostOps_AppleAppStoreId", "");
+        iosAppStoreId = EditorPrefs.GetString(PK("AppleAppStoreId"), "");
     }
     
     void SaveAppleAppStoreId()
     {
-        EditorPrefs.SetString("BoostOps_AppleAppStoreId", iosAppStoreId);
+        EditorPrefs.SetString(PK("AppleAppStoreId"), iosAppStoreId);
         
         // Also save to project settings so Overview page can read it
         var settings = BoostOpsProjectSettings.GetOrCreateSettings();
@@ -16893,12 +16947,12 @@ https://developer.android.com/training/app-links/verify-site-associations";
     
     void LoadHostingOption()
     {
-        hostingOption = (HostingOption)EditorPrefs.GetInt("BoostOps_HostingOption", 0);
+        hostingOption = (HostingOption)EditorPrefs.GetInt(PK("HostingOption"), 0);
     }
     
     void SaveHostingOption()
     {
-        EditorPrefs.SetInt("BoostOps_HostingOption", (int)hostingOption);
+        EditorPrefs.SetInt(PK("HostingOption"), (int)hostingOption);
     }
     
     void LoadStudioInfo()
@@ -16919,12 +16973,12 @@ https://developer.android.com/training/app-links/verify-site-associations";
     
     void LoadRegistrationState()
     {
-        registrationState = (ProjectRegistrationState)EditorPrefs.GetInt("BoostOps_RegistrationState", 0);
+        registrationState = (ProjectRegistrationState)EditorPrefs.GetInt(PK("RegistrationState"), 0);
     }
     
     void SaveRegistrationState()
     {
-        EditorPrefs.SetInt("BoostOps_RegistrationState", (int)registrationState);
+        EditorPrefs.SetInt(PK("RegistrationState"), (int)registrationState);
     }
     
     void DetectCrossPromoConfigurations()
@@ -17181,7 +17235,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
             var projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
             string iosAppStoreId = projectSettings.appleAppStoreId;
             string appleTeamId = PlayerSettings.iOS.appleDeveloperTeamID;
-            string androidSha256 = EditorPrefs.GetString("BoostOps_AndroidCertFingerprint", "");
+            string androidSha256 = EditorPrefs.GetString(PK("AndroidCertFingerprint"), "");
             string[] androidSha256Fingerprints = !string.IsNullOrEmpty(androidSha256) ? new string[] { androidSha256 } : new string[0];
             
             Debug.Log($"[BoostOps] Registering project: {projectName}");
@@ -17495,16 +17549,14 @@ https://developer.android.com/training/app-links/verify-site-associations";
         public string google;
         public string web;
         public string amazon;
-        public string windows;
+        public string microsoft;
+        public string samsung;
         
-        /// <summary>
-        /// Check if any store links are available (at least one valid store URL)
-        /// </summary>
         public bool HasAnyLinks()
         {
             return !string.IsNullOrEmpty(apple) || !string.IsNullOrEmpty(google) || 
                    !string.IsNullOrEmpty(web) || !string.IsNullOrEmpty(amazon) || 
-                   !string.IsNullOrEmpty(windows);
+                   !string.IsNullOrEmpty(microsoft) || !string.IsNullOrEmpty(samsung);
         }
     }
 
@@ -18054,9 +18106,9 @@ https://developer.android.com/training/app-links/verify-site-associations";
         try
         {
             // Load the JSON that was saved by the runtime system
-            string runtimeConfigJson = EditorPrefs.GetString("BoostOps_RuntimeConfig_JSON", "");
-            string runtimeConfigProvider = EditorPrefs.GetString("BoostOps_RuntimeConfig_Provider", "");
-            string runtimeConfigTimestamp = EditorPrefs.GetString("BoostOps_RuntimeConfig_Timestamp", "");
+            string runtimeConfigJson = EditorPrefs.GetString(PK("RuntimeConfig_JSON"), "");
+            string runtimeConfigProvider = EditorPrefs.GetString(PK("RuntimeConfig_Provider"), "");
+            string runtimeConfigTimestamp = EditorPrefs.GetString(PK("RuntimeConfig_Timestamp"), "");
             
             if (string.IsNullOrEmpty(runtimeConfigJson) || runtimeConfigJson == "{}")
             {
@@ -19989,8 +20041,8 @@ https://developer.android.com/training/app-links/verify-site-associations";
                 };
                 
                 string json = JsonUtility.ToJson(config);
-                EditorPrefs.SetString("BoostOps_CachedRemoteCampaigns", json);
-                EditorPrefs.SetString("BoostOps_RemoteConfigLastSync", lastRemoteConfigSync);
+                EditorPrefs.SetString(PK("CachedRemoteCampaigns"), json);
+                EditorPrefs.SetString(PK("RemoteConfigLastSync"), lastRemoteConfigSync);
                 
                 LogDebug($"Saved {cachedRemoteCampaigns.Count} campaigns to cache");
             }
@@ -20067,8 +20119,8 @@ https://developer.android.com/training/app-links/verify-site-associations";
     {
         try
         {
-            string cachedJson = EditorPrefs.GetString("BoostOps_CachedRemoteCampaigns", "");
-            lastRemoteConfigSync = EditorPrefs.GetString("BoostOps_RemoteConfigLastSync", "");
+            string cachedJson = EditorPrefs.GetString(PK("CachedRemoteCampaigns"), "");
+            lastRemoteConfigSync = EditorPrefs.GetString(PK("RemoteConfigLastSync"), "");
             
             if (!string.IsNullOrEmpty(cachedJson))
             {
@@ -20118,8 +20170,8 @@ https://developer.android.com/training/app-links/verify-site-associations";
         lastRemoteConfigSync = "";
         crossPromoLastSync = "";
         
-        EditorPrefs.DeleteKey("BoostOps_CachedRemoteCampaigns");
-        EditorPrefs.DeleteKey("BoostOps_RemoteConfigLastSync");
+        EditorPrefs.DeleteKey(PK("CachedRemoteCampaigns"));
+        EditorPrefs.DeleteKey(PK("RemoteConfigLastSync"));
         
         LogDebug("Cleared remote campaign cache");
     }
@@ -20132,59 +20184,58 @@ https://developer.android.com/training/app-links/verify-site-associations";
     {
         LogDebug("=== CLEARING ALL BOOSTOPS CACHE ===");
         
-        // Runtime config cache
-        EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_JSON");
-        EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Key");
-        EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Timestamp");
-        EditorPrefs.DeleteKey("BoostOps_RuntimeConfig_Provider");
+        // Runtime config cache (project-scoped)
+        EditorPrefs.DeleteKey(PK("RuntimeConfig_JSON"));
+        EditorPrefs.DeleteKey(PK("RuntimeConfig_Key"));
+        EditorPrefs.DeleteKey(PK("RuntimeConfig_Timestamp"));
+        EditorPrefs.DeleteKey(PK("RuntimeConfig_Provider"));
         
-        // Remote campaigns cache
-        EditorPrefs.DeleteKey("BoostOps_CachedRemoteCampaigns");
-        EditorPrefs.DeleteKey("BoostOps_RemoteConfigLastSync");
+        // Remote campaigns cache (project-scoped)
+        EditorPrefs.DeleteKey(PK("CachedRemoteCampaigns"));
+        EditorPrefs.DeleteKey(PK("RemoteConfigLastSync"));
         
-        // Authentication cache
+        // Authentication cache (global — same user across projects)
         EditorPrefs.DeleteKey("BoostOps_UserEmail");
         EditorPrefs.DeleteKey("BoostOps_ApiToken");
         
-        // Project configuration cache
-        EditorPrefs.DeleteKey("BoostOps_ProjectSlug");
-        EditorPrefs.DeleteKey("BoostOps_DynamicLinkUrl");
-        EditorPrefs.DeleteKey("BoostOps_AndroidCertFingerprint");
-        EditorPrefs.DeleteKey("BoostOps_AppleAppStoreId");
-        EditorPrefs.DeleteKey("BoostOps_SelectedQRDomain");
+        // Project configuration cache (project-scoped)
+        EditorPrefs.DeleteKey(PK("ProjectSlug"));
+        EditorPrefs.DeleteKey(PK("DynamicLinkUrl"));
+        EditorPrefs.DeleteKey(PK("AndroidCertFingerprint"));
+        EditorPrefs.DeleteKey(PK("AppleAppStoreId"));
+        EditorPrefs.DeleteKey(PK("SelectedQRDomain"));
         
-        // Feature mode states
-        EditorPrefs.DeleteKey("BoostOps_LinksMode");
-        EditorPrefs.DeleteKey("BoostOps_CrossPromoMode");
-        EditorPrefs.DeleteKey("BoostOps_LinksStatus");
-        EditorPrefs.DeleteKey("BoostOps_CrossPromoStatus");
-        EditorPrefs.DeleteKey("BoostOps_LinksServerRevision");
-        EditorPrefs.DeleteKey("BoostOps_CrossPromoServerRevision");
-        EditorPrefs.DeleteKey("BoostOps_LinksLastSync");
-        EditorPrefs.DeleteKey("BoostOps_CrossPromoLastSync");
+        // Feature mode states (project-scoped)
+        EditorPrefs.DeleteKey(PK("LinksMode"));
+        EditorPrefs.DeleteKey(PK("CrossPromoMode"));
+        EditorPrefs.DeleteKey(PK("LinksStatus"));
+        EditorPrefs.DeleteKey(PK("CrossPromoStatus"));
+        EditorPrefs.DeleteKey(PK("LinksServerRevision"));
+        EditorPrefs.DeleteKey(PK("CrossPromoServerRevision"));
+        EditorPrefs.DeleteKey(PK("LinksLastSync"));
+        EditorPrefs.DeleteKey(PK("CrossPromoLastSync"));
         
-        // Studio information
+        // Studio information (global — same studio across projects)
         EditorPrefs.DeleteKey("BoostOps_StudioId");
         EditorPrefs.DeleteKey("BoostOps_StudioName");
         EditorPrefs.DeleteKey("BoostOps_StudioDescription");
         EditorPrefs.DeleteKey("BoostOps_IsStudioOwner");
         
-        // Registration state
-        EditorPrefs.DeleteKey("BoostOps_RegistrationState");
+        // Registration state (project-scoped)
+        EditorPrefs.DeleteKey(PK("RegistrationState"));
         
-        // Settings
+        // Settings (global)
         EditorPrefs.DeleteKey("BoostOps_EnableDebugLogging");
         EditorPrefs.DeleteKey("BoostOps_SkipServerValidation");
-        EditorPrefs.DeleteKey("BoostOps_HostingOption");
+        EditorPrefs.DeleteKey(PK("HostingOption"));
         
-        // Verification status cache (per-project)
-        string projectBasePath = $"BoostOps_{Application.dataPath}";
-        EditorPrefs.DeleteKey($"{projectBasePath}_IOSVerificationStatus");
-        EditorPrefs.DeleteKey($"{projectBasePath}_AndroidVerificationStatus");
-        EditorPrefs.DeleteKey($"{projectBasePath}_AmazonVerificationStatus");
-        EditorPrefs.DeleteKey($"{projectBasePath}_IOSLastVerifiedValues");
-        EditorPrefs.DeleteKey($"{projectBasePath}_AndroidLastVerifiedValues");
-        EditorPrefs.DeleteKey($"{projectBasePath}_AmazonLastVerifiedValues");
+        // Verification status cache (project-scoped — already using PK pattern)
+        EditorPrefs.DeleteKey(PK("IOSVerificationStatus"));
+        EditorPrefs.DeleteKey(PK("AndroidVerificationStatus"));
+        EditorPrefs.DeleteKey(PK("AmazonVerificationStatus"));
+        EditorPrefs.DeleteKey(PK("IOSLastVerifiedValues"));
+        EditorPrefs.DeleteKey(PK("AndroidLastVerifiedValues"));
+        EditorPrefs.DeleteKey(PK("AmazonLastVerifiedValues"));
         
         // Clear runtime variables
         cachedRemoteCampaigns?.Clear();

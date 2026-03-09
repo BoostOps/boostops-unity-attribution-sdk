@@ -684,7 +684,7 @@ namespace BoostOps.Editor
                 case "amazon":
                     return !string.IsNullOrEmpty(settings.amazonStoreId) ? settings.amazonStoreId : null;
                 case "windows":
-                    return !string.IsNullOrEmpty(settings.windowsStoreId) ? settings.windowsStoreId : null;
+                    return !string.IsNullOrEmpty(settings.microsoftStoreId) ? settings.microsoftStoreId : null;
                 case "samsung":
                     return !string.IsNullOrEmpty(settings.samsungStoreId) ? settings.samsungStoreId : null;
                 default:
@@ -723,8 +723,8 @@ namespace BoostOps.Editor
                 }
                 if (!string.IsNullOrEmpty(target.samsungStoreId))
                     storeUrls["samsung"] = $"samsungapps://ProductDetail/{target.samsungStoreId}";
-                if (!string.IsNullOrEmpty(target.windowsStoreId))
-                    storeUrls["microsoft"] = $"ms-windows-store://pdp/?productid={target.windowsStoreId}";
+                if (!string.IsNullOrEmpty(target.microsoftStoreId))
+                    storeUrls["microsoft"] = $"ms-windows-store://pdp/?productid={target.microsoftStoreId}";
                 
                 // Build store IDs (extracted canonical identifiers)
                 var storeIds = new Dictionary<string, string>();
@@ -736,8 +736,8 @@ namespace BoostOps.Editor
                     storeIds["amazon"] = target.amazonStoreId;
                 if (!string.IsNullOrEmpty(target.samsungStoreId))
                     storeIds["samsung"] = target.samsungStoreId;
-                if (!string.IsNullOrEmpty(target.windowsStoreId))
-                    storeIds["microsoft"] = target.windowsStoreId;
+                if (!string.IsNullOrEmpty(target.microsoftStoreId))
+                    storeIds["microsoft"] = target.microsoftStoreId;
                 
                 // Build platform IDs (bundle identifiers and platform-specific data)
                 var platformIds = new Dictionary<string, object>();
@@ -826,7 +826,7 @@ namespace BoostOps.Editor
             var googleStoreId = GetProjectSettingsStoreId("google") ?? androidPackageName;
             var amazonStoreId = GetProjectSettingsStoreId("amazon");
             var samsungStoreId = GetProjectSettingsStoreId("samsung");
-            var windowsStoreId = GetProjectSettingsStoreId("windows");
+            var microsoftStoreId = GetProjectSettingsStoreId("windows");
             
             if (!string.IsNullOrEmpty(appleStoreId))
                 sourceStoreUrls["apple"] = $"https://apps.apple.com/app/id{appleStoreId}";
@@ -842,8 +842,8 @@ namespace BoostOps.Editor
             }
             if (!string.IsNullOrEmpty(samsungStoreId))
                 sourceStoreUrls["samsung"] = $"samsungapps://ProductDetail/{samsungStoreId}";
-            if (!string.IsNullOrEmpty(windowsStoreId))
-                sourceStoreUrls["microsoft"] = $"ms-windows-store://pdp/?productid={windowsStoreId}";
+            if (!string.IsNullOrEmpty(microsoftStoreId))
+                sourceStoreUrls["microsoft"] = $"ms-windows-store://pdp/?productid={microsoftStoreId}";
             
             // Build source store IDs
             var sourceStoreIds = new Dictionary<string, string>();
@@ -855,8 +855,8 @@ namespace BoostOps.Editor
                 sourceStoreIds["amazon"] = amazonStoreId;
             if (!string.IsNullOrEmpty(samsungStoreId))
                 sourceStoreIds["samsung"] = samsungStoreId;
-            if (!string.IsNullOrEmpty(windowsStoreId))
-                sourceStoreIds["microsoft"] = windowsStoreId;
+            if (!string.IsNullOrEmpty(microsoftStoreId))
+                sourceStoreIds["microsoft"] = microsoftStoreId;
                 
             // Build source platform IDs
             var sourcePlatformIds = new Dictionary<string, object>();
@@ -964,6 +964,7 @@ namespace BoostOps.Editor
             public string apple;
             public string google;
             public string amazon;
+            public string microsoft;
         }
 
         [System.Serializable]
