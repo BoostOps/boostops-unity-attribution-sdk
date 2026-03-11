@@ -101,20 +101,15 @@ namespace BoostOps
                 {
                     BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Successfully parsed {sharedConfig.campaigns.Count} campaigns from shared model");
                     
-                    // Since we've unified the Campaign class, no conversion is needed
-                    var campaigns = sharedConfig.campaigns;
+                    // Convert from BoostOps.Core.Campaign to BoostOps.Campaign (runtime type)
+                    var runtimeCampaigns = sharedConfig.campaigns.Select(ConvertCoreToRuntimeCampaign).ToList();
                     
-                    // Also parse the full config using existing parser for compatibility
                     var config = BoostOpsConfig.ParseFromJson(configJson);
                     
-                    // Note: source_project_id is now extracted from project key at SDK init time
-                    // No need to get it from remote config
+                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Converted to {runtimeCampaigns.Count} runtime campaigns");
                     
-                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Converted to {campaigns.Count} runtime campaigns");
-                    
-                    // Validate campaigns
                     int validCampaigns = 0;
-                    foreach (var campaign in campaigns)
+                    foreach (var campaign in runtimeCampaigns)
                     {
                         if (CampaignParser.IsValidCampaign(campaign))
                         {
@@ -126,9 +121,9 @@ namespace BoostOps
                             BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Invalid campaign: {campaign?.name ?? "Unknown"} - missing required data");
                         }
                     }
-                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"{validCampaigns} out of {campaigns.Count} campaigns are valid");
+                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"{validCampaigns} out of {runtimeCampaigns.Count} campaigns are valid");
 
-                    return RemoteConfigResult.CreateSuccess(configJson, campaigns, config);
+                    return RemoteConfigResult.CreateSuccess(configJson, runtimeCampaigns, config);
                 }
                 else
                 {
@@ -157,8 +152,97 @@ namespace BoostOps
         }
         
         /// <summary>
-        /// Convert shared config model campaigns to runtime Campaign objects
-        /// Same logic as UnityRemoteConfigProvider for consistency
+        /// Convert from BoostOps.Core.Campaign (JSON deserialization model) to BoostOps.Campaign (runtime model)
+        /// </summary>
+        private Campaign ConvertCoreToRuntimeCampaign(BoostOps.Core.Campaign coreCampaign)
+        {
+            var campaign = new Campaign();
+            
+            campaign.campaign_id = coreCampaign.campaign_id;
+            campaign.name = coreCampaign.name;
+            campaign.status = coreCampaign.status;
+            campaign.min_sessions = coreCampaign.min_sessions;
+            campaign.min_player_days = coreCampaign.min_player_days;
+            campaign.created_at = coreCampaign.created_at;
+            campaign.updated_at = coreCampaign.updated_at;
+            
+            if (coreCampaign.frequency_cap != null)
+            {
+                campaign.frequency_cap = new BoostOps.Core.FrequencyCapJson
+                {
+                    time_unit = coreCampaign.frequency_cap.time_unit,
+                    impressions = coreCampaign.frequency_cap.impressions
+                };
+            }
+            
+            if (coreCampaign.target_project != null)
+            {
+                campaign.target_project = new TargetProject();
+                campaign.target_project.project_id = coreCampaign.target_project.project_id;
+                
+                if (coreCampaign.target_project.store_urls != null)
+                {
+                    campaign.target_project.store_urls = new StoreUrls
+                    {
+                        apple = coreCampaign.target_project.store_urls.apple,
+                        google = coreCampaign.target_project.store_urls.google,
+                        amazon = coreCampaign.target_project.store_urls.amazon,
+                        microsoft = coreCampaign.target_project.store_urls.microsoft,
+                        samsung = coreCampaign.target_project.store_urls.samsung,
+                        web = coreCampaign.target_project.store_urls.web
+                    };
+                }
+                
+                if (coreCampaign.target_project.store_ids != null)
+                {
+                    campaign.target_project.store_ids = new StoreIds
+                    {
+                        apple = coreCampaign.target_project.store_ids.apple,
+                        google = coreCampaign.target_project.store_ids.google,
+                        amazon = coreCampaign.target_project.store_ids.amazon,
+                        microsoft = coreCampaign.target_project.store_ids.microsoft,
+                        samsung = coreCampaign.target_project.store_ids.samsung
+                    };
+                }
+                
+                if (coreCampaign.target_project.platform_ids != null)
+                {
+                    campaign.target_project.platform_ids = new PlatformIds
+                    {
+                        ios_bundle_id = coreCampaign.target_project.platform_ids.ios_bundle_id,
+                        android_package_name = coreCampaign.target_project.platform_ids.android_package_name
+                    };
+                }
+                
+                if (coreCampaign.target_project.creatives != null && coreCampaign.target_project.creatives.Length > 0)
+                {
+                    campaign.target_project.creatives = coreCampaign.target_project.creatives.Select(coreCreative =>
+                    {
+                        var creative = new Creative();
+                        creative.format = coreCreative.format;
+                        creative.creative_id = coreCreative.creative_id;
+                        
+                        if (coreCreative.variants != null && coreCreative.variants.Length > 0)
+                        {
+                            creative.variants = coreCreative.variants.Select(v => new CreativeVariant
+                            {
+                                url = v.url,
+                                local_key = v.local_key,
+                                resolution = v.resolution,
+                                sha256 = v.sha256
+                            }).ToArray();
+                        }
+                        
+                        return creative;
+                    }).ToArray();
+                }
+            }
+            
+            return campaign;
+        }
+        
+        /// <summary>
+        /// Legacy conversion method (kept for backward compatibility)
         /// </summary>
         private List<Campaign> ConvertToRuntimeCampaigns(List<BoostOps.Campaign> sharedCampaigns)
         {

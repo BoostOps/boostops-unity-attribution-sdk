@@ -5,7 +5,6 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Collections;
 using System.Linq;
-using Unity.Services.Core;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -219,12 +218,12 @@ namespace BoostOps
             AddLog("🔧 Initializing Unity Services...");
             try
             {
-                await Unity.Services.Core.UnityServices.InitializeAsync();
+                await InitUnityServicesViaReflection();
                 AddLog("✅ Unity Services initialized successfully");
             }
             catch (System.Exception ex)
             {
-                AddLog($"❌ Unity Services initialization failed: {ex.Message}");
+                AddLog($"⚠️ Unity Services initialization skipped: {ex.Message}");
             }
             
             // Set up custom prefabs before SDK initialization
@@ -254,28 +253,14 @@ namespace BoostOps
                 
                 try
                 {
-                    var projectSettings = BoostOpsProjectSettings.GetInstance();
-                    string projectKey = projectSettings?.projectKey ?? "unknown";
-                    
-                    var userAttributes = new System.Collections.Generic.Dictionary<string, object>();
-                    var appAttributes = new System.Collections.Generic.Dictionary<string, object>
+                    bool fetched = await FetchRemoteConfigViaReflection();
+                    if (fetched)
                     {
-                        { "environment", "production" },
-                        { "project_key", projectKey }
-                    };
-                    
-                    await Unity.Services.RemoteConfig.RemoteConfigService.Instance.FetchConfigsAsync(userAttributes, appAttributes);
-                    
-                    string configKey = "boostops_config";
-                    var configJson = Unity.Services.RemoteConfig.RemoteConfigService.Instance.appConfig.GetJson(configKey, "{}");
-                    
-                    if (!string.IsNullOrEmpty(configJson) && configJson != "{}")
-                    {
-                        AddLog($"✅ Remote config fetched ({configJson.Length} chars)");
+                        AddLog("✅ Remote config fetched successfully");
                     }
                     else
                     {
-                        AddLog($"⚠️ No remote config found for key: {configKey}");
+                        AddLog("⚠️ Remote config not available (no supported provider found)");
                     }
                 }
                 catch (System.Exception ex)
@@ -620,6 +605,117 @@ namespace BoostOps
         private void LogDebug(string message)
         {
             BoostOpsLogger.LogDebug("Demo", message);
+        }
+        
+        /// <summary>
+        /// Initialize Unity Services via reflection to avoid hard compile-time dependency.
+        /// Works whether or not Unity.Services.Core is installed.
+        /// </summary>
+        private async Task InitUnityServicesViaReflection()
+        {
+            var unityServicesType = System.Type.GetType("Unity.Services.Core.UnityServices, Unity.Services.Core");
+            if (unityServicesType == null)
+            {
+                Debug.Log("[BoostOpsDemo] Unity.Services.Core not found — skipping Unity Services init");
+                return;
+            }
+            
+            var stateProperty = unityServicesType.GetProperty("State",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (stateProperty?.GetValue(null)?.ToString() == "Initialized")
+                return;
+            
+            var initMethod = unityServicesType.GetMethod("InitializeAsync",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                null, System.Type.EmptyTypes, null);
+            if (initMethod != null)
+            {
+                var task = initMethod.Invoke(null, null) as Task;
+                if (task != null) await task;
+            }
+        }
+        
+        /// <summary>
+        /// Fetch remote config via reflection — tries Unity Remote Config first, then Firebase.
+        /// No hard compile-time dependency on either package.
+        /// </summary>
+        private async Task<bool> FetchRemoteConfigViaReflection()
+        {
+            var projectSettings = BoostOpsProjectSettings.GetInstance();
+            string configKey = "boostops_config";
+            
+            // Try Unity Remote Config
+            var rcType = System.Type.GetType("Unity.Services.RemoteConfig.RemoteConfigService, Unity.Services.RemoteConfig");
+            if (rcType != null)
+            {
+                var instanceProp = rcType.GetProperty("Instance",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                var instance = instanceProp?.GetValue(null);
+                if (instance != null)
+                {
+                    var fetchMethod = rcType.GetMethod("FetchConfigsAsync",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (fetchMethod != null)
+                    {
+                        var userAttrs = new Dictionary<string, object>();
+                        var appAttrs = new Dictionary<string, object>
+                        {
+                            { "environment", "production" },
+                            { "project_key", projectSettings?.projectKey ?? "unknown" }
+                        };
+                        var task = fetchMethod.Invoke(instance, new object[] { userAttrs, appAttrs }) as Task;
+                        if (task != null) await task;
+                    }
+                    
+                    var appConfigProp = instance.GetType().GetProperty("appConfig");
+                    var appConfig = appConfigProp?.GetValue(instance);
+                    var getJson = appConfig?.GetType().GetMethod("GetJson",
+                        new System.Type[] { typeof(string), typeof(string) });
+                    if (getJson != null)
+                    {
+                        var json = getJson.Invoke(appConfig, new object[] { configKey, "{}" }) as string;
+                        if (!string.IsNullOrEmpty(json) && json != "{}")
+                        {
+                            AddLog($"✅ Unity Remote Config fetched ({json.Length} chars)");
+                            return true;
+                        }
+                    }
+                }
+            }
+            
+            // Try Firebase Remote Config
+            var fbType = System.Type.GetType("Firebase.RemoteConfig.FirebaseRemoteConfig, Firebase.RemoteConfig");
+            if (fbType != null)
+            {
+                AddLog("🔥 Using Firebase Remote Config...");
+                var defaultProp = fbType.GetProperty("DefaultInstance",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                var fbInstance = defaultProp?.GetValue(null);
+                if (fbInstance != null)
+                {
+                    var fetchMethod = fbType.GetMethod("FetchAsync",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                        null, System.Type.EmptyTypes, null);
+                    if (fetchMethod != null)
+                    {
+                        var task = fetchMethod.Invoke(fbInstance, null) as Task;
+                        if (task != null) await task;
+                    }
+                    
+                    var activateMethod = fbType.GetMethod("ActivateAsync",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (activateMethod != null)
+                    {
+                        var task = activateMethod.Invoke(fbInstance, null) as Task;
+                        if (task != null) await task;
+                    }
+                    
+                    AddLog("✅ Firebase Remote Config fetched and activated");
+                    return true;
+                }
+            }
+            
+            return false;
         }
     }
 } 
