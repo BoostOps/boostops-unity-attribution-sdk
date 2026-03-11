@@ -2,9 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
-#if !BOOSOPS_DLL_BUILD
-using Unity.Services.Core;
-#endif
 using BoostOps.Analytics;
 
 namespace BoostOps.Internal

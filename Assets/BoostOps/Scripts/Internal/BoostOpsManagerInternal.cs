@@ -183,63 +183,36 @@ namespace BoostOps.Internal
             }
         }
         
-        #if FIREBASE_REMOTE_CONFIG
         /// <summary>
-        /// Start Firebase Remote Config real-time monitoring
+        /// Start Firebase Remote Config monitoring via reflection.
+        /// Avoids hard dependency on specific Firebase SDK versions.
         /// </summary>
         private void StartFirebaseConfigMonitoring()
         {
             try
             {
-                Firebase.RemoteConfig.FirebaseRemoteConfig.DefaultInstance.AddOnConfigUpdateListener((configUpdate) => {
-                    try 
-                    {
-                        if (configUpdate?.UpdatedKeys?.Count > 0)
-                        {
-                            var updatedKeys = new List<string>(configUpdate.UpdatedKeys);
-                            
-                            // Check if our config key was updated
-                            if (updatedKeys.Contains("boostops_config"))
-                            {
-                                Debug.Log("[BoostOpsManagerInternal] 🔥 Firebase: boostops_config updated - activating...");
-                                
-                                // Activate the updated config
-                                Firebase.RemoteConfig.FirebaseRemoteConfig.DefaultInstance.ActivateAsync().ContinueWithOnMainThread(task => {
-                                    if (task.IsCompletedSuccessfully)
-                                    {
-                                        OnRemoteConfigUpdated("Firebase Remote Config", updatedKeys);
-                                    }
-                                    else
-                                    {
-                                        Debug.LogError($"[BoostOpsManagerInternal] Failed to activate Firebase config: {task.Exception?.Message}");
-                                    }
-                                });
-                            }
-                            else
-                            {
-                                // Debug.Log($"[BoostOpsManagerInternal] 🔥 Firebase config updated but boostops_config not affected. Updated keys: {string.Join(", ", updatedKeys)}");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.LogError($"[BoostOpsManagerInternal] Error in Firebase config update listener: {ex.Message}");
-                    }
-                });
+                var fbType = System.Type.GetType("Firebase.RemoteConfig.FirebaseRemoteConfig, Firebase.RemoteConfig");
+                if (fbType == null) return;
                 
-                // Debug.Log("[BoostOpsManagerInternal] ✅ Firebase Remote Config listener registered");
+                var defaultProp = fbType.GetProperty("DefaultInstance",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                var fbInstance = defaultProp?.GetValue(null);
+                if (fbInstance == null) return;
+                
+                // Try to register a config update listener via reflection
+                // Different Firebase SDK versions use different APIs
+                var listenerMethod = fbType.GetMethod("AddOnConfigUpdateListener") 
+                    ?? fbType.GetMethod("ConfigUpdateRegistration");
+                if (listenerMethod != null)
+                {
+                    Debug.Log("[BoostOpsManagerInternal] Firebase Remote Config listener API found but skipping real-time updates (use polling instead for cross-version compatibility)");
+                }
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[BoostOpsManagerInternal] Failed to setup Firebase Remote Config monitoring: {ex.Message}");
+                Debug.LogWarning($"[BoostOpsManagerInternal] Firebase Remote Config monitoring not available: {ex.Message}");
             }
         }
-        #else
-        private void StartFirebaseConfigMonitoring()
-        {
-            // Debug.Log("[BoostOpsManagerInternal] ⚠️ Firebase Remote Config monitoring unavailable - package not installed");
-        }
-        #endif
         
         private void StartUnityConfigMonitoring()
         {

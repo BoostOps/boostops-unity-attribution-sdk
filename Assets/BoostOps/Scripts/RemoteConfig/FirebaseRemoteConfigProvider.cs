@@ -101,20 +101,15 @@ namespace BoostOps
                 {
                     BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Successfully parsed {sharedConfig.campaigns.Count} campaigns from shared model");
                     
-                    // Since we've unified the Campaign class, no conversion is needed
-                    var campaigns = sharedConfig.campaigns;
+                    // Convert from BoostOps.Core.Campaign to BoostOps.Campaign (runtime type)
+                    var runtimeCampaigns = sharedConfig.campaigns.Select(ConvertCoreToRuntimeCampaign).ToList();
                     
-                    // Also parse the full config using existing parser for compatibility
                     var config = BoostOpsConfig.ParseFromJson(configJson);
                     
-                    // Note: source_project_id is now extracted from project key at SDK init time
-                    // No need to get it from remote config
+                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Converted to {runtimeCampaigns.Count} runtime campaigns");
                     
-                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Converted to {campaigns.Count} runtime campaigns");
-                    
-                    // Validate campaigns
                     int validCampaigns = 0;
-                    foreach (var campaign in campaigns)
+                    foreach (var campaign in runtimeCampaigns)
                     {
                         if (CampaignParser.IsValidCampaign(campaign))
                         {
@@ -126,9 +121,9 @@ namespace BoostOps
                             BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Invalid campaign: {campaign?.name ?? "Unknown"} - missing required data");
                         }
                     }
-                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"{validCampaigns} out of {campaigns.Count} campaigns are valid");
+                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"{validCampaigns} out of {runtimeCampaigns.Count} campaigns are valid");
 
-                    return RemoteConfigResult.CreateSuccess(configJson, campaigns, config);
+                    return RemoteConfigResult.CreateSuccess(configJson, runtimeCampaigns, config);
                 }
                 else
                 {
@@ -157,130 +152,93 @@ namespace BoostOps
         }
         
         /// <summary>
-        /// Convert shared config model campaigns to runtime Campaign objects
-        /// Same logic as UnityRemoteConfigProvider for consistency
+        /// Convert from BoostOps.Core.Campaign (JSON deserialization model) to BoostOps.Campaign (runtime model)
         /// </summary>
-        private List<Campaign> ConvertToRuntimeCampaigns(List<BoostOps.Campaign> sharedCampaigns)
+        private Campaign ConvertCoreToRuntimeCampaign(BoostOps.Core.Campaign coreCampaign)
         {
-            var runtimeCampaigns = new List<Campaign>();
+            var campaign = new Campaign();
             
-            foreach (var sharedCampaign in sharedCampaigns)
+            campaign.campaign_id = coreCampaign.campaign_id;
+            campaign.name = coreCampaign.name;
+            campaign.status = coreCampaign.status;
+            campaign.min_sessions = coreCampaign.min_sessions;
+            campaign.min_player_days = coreCampaign.min_player_days;
+            campaign.created_at = coreCampaign.created_at;
+            campaign.updated_at = coreCampaign.updated_at;
+            
+            if (coreCampaign.frequency_cap != null)
             {
-                try
+                campaign.frequency_cap = new BoostOps.Core.FrequencyCapJson
                 {
-                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Converting shared campaign: {sharedCampaign.campaign_id}");
-                    
-                    // Create runtime campaign with data from shared model
-                    var runtimeCampaign = new Campaign
+                    time_unit = coreCampaign.frequency_cap.time_unit,
+                    impressions = coreCampaign.frequency_cap.impressions
+                };
+            }
+            
+            if (coreCampaign.target_project != null)
+            {
+                campaign.target_project = new TargetProject();
+                campaign.target_project.project_id = coreCampaign.target_project.project_id;
+                
+                if (coreCampaign.target_project.store_urls != null)
+                {
+                    campaign.target_project.store_urls = new StoreUrls
                     {
-                        campaign_id = sharedCampaign.campaign_id,
-                        name = sharedCampaign.name,
-                        status = sharedCampaign.status,
-                        created_at = sharedCampaign.created_at,
-                        updated_at = sharedCampaign.updated_at
+                        apple = coreCampaign.target_project.store_urls.apple,
+                        google = coreCampaign.target_project.store_urls.google,
+                        amazon = coreCampaign.target_project.store_urls.amazon,
+                        microsoft = coreCampaign.target_project.store_urls.microsoft,
+                        samsung = coreCampaign.target_project.store_urls.samsung,
+                        web = coreCampaign.target_project.store_urls.web
                     };
-                    
-                    // Convert schedule if available
-                    if (sharedCampaign.schedule != null)
-                    {
-                        runtimeCampaign.schedule = new CampaignSchedule
-                        {
-                            start_date = sharedCampaign.schedule.start_date,
-                            end_date = sharedCampaign.schedule.end_date,
-                            days = ConvertStringDaysToIntArray(sharedCampaign.schedule.days),
-                            start_hour = sharedCampaign.schedule.start_hour,
-                            end_hour = sharedCampaign.schedule.end_hour
-                        };
-                        
-                        BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"  Schedule - Start: {runtimeCampaign.schedule.start_date}, Days: [{string.Join(",", runtimeCampaign.schedule.days)}]");
-                    }
-                    
-                    // Convert target project
-                    if (sharedCampaign.target_project != null)
-                    {
-                        runtimeCampaign.target_project = new TargetProject
-                        {
-                            project_id = sharedCampaign.target_project.project_id
-                        };
-                        
-                        // Convert store URLs (using StoreLinks which is the runtime class name)
-                        if (sharedCampaign.target_project.store_urls != null)
-                        {
-                            runtimeCampaign.target_project.store_urls = new StoreUrls
-                            {
-                                apple = sharedCampaign.target_project.store_urls.apple,
-                                google = sharedCampaign.target_project.store_urls.google,
-                                web = sharedCampaign.target_project.store_urls.web,
-                                amazon = sharedCampaign.target_project.store_urls.amazon,
-                                microsoft = sharedCampaign.target_project.store_urls.microsoft
-                            };
-                            
-                            BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"  Store URLs - Apple: {runtimeCampaign.target_project.store_urls.apple}, Google: {runtimeCampaign.target_project.store_urls.google}");
-                        }
-                        
-                        // Convert creatives if available (runtime uses Creative[] arrays, not Lists)
-                        if (sharedCampaign.target_project.creatives != null && sharedCampaign.target_project.creatives.Count > 0)
-                        {
-                            var runtimeCreatives = new List<Creative>();
-                            foreach (var sharedCreative in sharedCampaign.target_project.creatives)
-                            {
-                                var runtimeCreative = new Creative
-                                {
-                                    creative_id = sharedCreative.creative_id,
-                                    format = sharedCreative.format,
-                                    orientation = sharedCreative.orientation,
-                                    prefetch = sharedCreative.prefetch,
-                                    ttl_hours = sharedCreative.ttl_hours
-                                    // Note: runtime Creative doesn't have 'required' or 'hosted_by' properties
-                                };
-                                
-                                if (sharedCreative.variants != null && sharedCreative.variants.Count > 0)
-                                {
-                                    var runtimeVariants = new List<CreativeVariant>();
-                                    foreach (var sharedVariant in sharedCreative.variants)
-                                    {
-                                        runtimeVariants.Add(new CreativeVariant
-                                        {
-                                            resolution = sharedVariant.resolution,
-                                            url = sharedVariant.url,
-                                            sha256 = sharedVariant.sha256,
-                                            local_key = sharedVariant.local_key
-                                        });
-                                    }
-                                    runtimeCreative.variants = runtimeVariants.ToArray(); // Convert List to array
-                                }
-                                
-                                runtimeCreatives.Add(runtimeCreative);
-                            }
-                            
-                            runtimeCampaign.target_project.creatives = runtimeCreatives.ToArray(); // Convert List to array
-                            BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"  Converted {runtimeCreatives.Count} creatives");
-                        }
-                    }
-                    
-                    // Convert frequency cap
-                    if (sharedCampaign.frequency_cap != null)
-                    {
-                        if (sharedCampaign.frequency_cap.time_unit?.ToUpper() == "UNLIMITED")
-                        {
-                            runtimeCampaign.frequency_cap = BoostOps.Core.FrequencyCap.Unlimited();
-                        }
-                        else
-                        {
-                            runtimeCampaign.frequency_cap = BoostOps.Core.FrequencyCap.Daily(sharedCampaign.frequency_cap.impressions);
-                        }
-                    }
-                    
-                    runtimeCampaigns.Add(runtimeCampaign);
-                    BoostOpsLogger.LogDebug("FirebaseRemoteConfig", $"Successfully converted campaign: {runtimeCampaign.campaign_id}");
                 }
-                catch (System.Exception ex)
+                
+                if (coreCampaign.target_project.store_ids != null)
                 {
-                    BoostOpsLogger.LogError("FirebaseRemoteConfig", $"Failed to convert campaign {sharedCampaign?.campaign_id}: {ex.Message}");
+                    campaign.target_project.store_ids = new StoreIds
+                    {
+                        apple = coreCampaign.target_project.store_ids.apple,
+                        google = coreCampaign.target_project.store_ids.google,
+                        amazon = coreCampaign.target_project.store_ids.amazon,
+                        microsoft = coreCampaign.target_project.store_ids.microsoft,
+                        samsung = coreCampaign.target_project.store_ids.samsung
+                    };
+                }
+                
+                if (coreCampaign.target_project.platform_ids != null)
+                {
+                    campaign.target_project.platform_ids = new PlatformIds
+                    {
+                        ios_bundle_id = coreCampaign.target_project.platform_ids.ios_bundle_id,
+                        android_package_name = coreCampaign.target_project.platform_ids.android_package_name
+                    };
+                }
+                
+                if (coreCampaign.target_project.creatives != null && coreCampaign.target_project.creatives.Length > 0)
+                {
+                    campaign.target_project.creatives = coreCampaign.target_project.creatives.Select(coreCreative =>
+                    {
+                        var creative = new Creative();
+                        creative.format = coreCreative.format;
+                        creative.creative_id = coreCreative.creative_id;
+                        
+                        if (coreCreative.variants != null && coreCreative.variants.Length > 0)
+                        {
+                            creative.variants = coreCreative.variants.Select(v => new CreativeVariant
+                            {
+                                url = v.url,
+                                local_key = v.local_key,
+                                resolution = v.resolution,
+                                sha256 = v.sha256
+                            }).ToArray();
+                        }
+                        
+                        return creative;
+                    }).ToArray();
                 }
             }
             
-            return runtimeCampaigns;
+            return campaign;
         }
         
         /// <summary>
@@ -307,24 +265,6 @@ namespace BoostOps
             }
         }
         
-        /// <summary>
-        /// Convert string days list to int array for runtime model
-        /// </summary>
-        private int[] ConvertStringDaysToIntArray(List<string> stringDays)
-        {
-            if (stringDays == null || stringDays.Count == 0)
-                return new int[0];
-                
-            var intDays = new List<int>();
-            foreach (string dayStr in stringDays)
-            {
-                if (int.TryParse(dayStr, out int dayInt))
-                {
-                    intDays.Add(dayInt);
-                }
-            }
-            return intDays.ToArray();
-        }
     }
 #else
     /// <summary>
