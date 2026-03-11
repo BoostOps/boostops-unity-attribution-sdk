@@ -6,9 +6,6 @@ using UnityEngine;
 using UnityEngine.UI;
 using BoostOps;
 using BoostOps.Analytics;
-#if !BOOSOPS_DLL_BUILD
-using Unity.Services.RemoteConfig;
-#endif
 
 namespace BoostOps.Internal
 {

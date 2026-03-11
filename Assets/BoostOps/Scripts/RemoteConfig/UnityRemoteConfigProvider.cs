@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-#if !BOOSOPS_DLL_BUILD
+#if UNITY_REMOTE_CONFIG
 using Unity.Services.RemoteConfig;
 #endif
 
 namespace BoostOps
 {
+#if UNITY_REMOTE_CONFIG
     /// <summary>
     /// Unity Remote Config provider implementation
     /// </summary>
@@ -36,18 +37,12 @@ namespace BoostOps
         {
             try
             {
-#if !BOOSOPS_DLL_BUILD
                 var requestTask = RemoteConfigService.Instance.FetchConfigsAsync<object, object>(new object(), new object());
                 await requestTask;
                 
                 BoostOpsLogger.LogDebug("UnityRemoteConfig", "Unity Remote Config fetched successfully");
 
                 string configJson = RemoteConfigService.Instance.appConfig.GetJson(configKey, "{}");
-#else
-                await Task.CompletedTask;
-                string configJson = "{}";
-                BoostOpsLogger.LogWarning("UnityRemoteConfig", "Unity Remote Config not available in DLL build");
-#endif
                 
                 BoostOpsLogger.LogDebug("UnityRemoteConfig", $"Config Key: {configKey}");
                 BoostOpsLogger.LogDebug("UnityRemoteConfig", $"JSON Length: {configJson?.Length ?? 0} characters");
@@ -77,25 +72,18 @@ namespace BoostOps
 
                 BoostOpsLogger.LogDebug("UnityRemoteConfig", "Parsing JSON using shared RemoteCampaignConfig model (same as editor)");
                 
-                // Use the same parsing logic as the editor for consistency
                 var sharedConfig = UnityEngine.JsonUtility.FromJson<BoostOps.Core.RemoteCampaignConfig>(configJson);
                 
                 if (sharedConfig?.campaigns != null && sharedConfig.campaigns.Count > 0)
                 {
                     BoostOpsLogger.LogDebug("UnityRemoteConfig", $"Successfully parsed {sharedConfig.campaigns.Count} campaigns from shared model");
                     
-                    // Convert from BoostOps.Core.Campaign to BoostOps.Campaign
                     var runtimeCampaigns = sharedConfig.campaigns.Select(ConvertCoreToRuntimeCampaign).ToList();
                     
-                    // Also parse the full config using existing parser for compatibility
                     var config = BoostOpsConfig.ParseFromJson(configJson);
-                    
-                    // Note: source_project_id is now extracted from project key at SDK init time
-                    // No need to get it from remote config
                     
                     BoostOpsLogger.LogDebug("UnityRemoteConfig", $"Converted to {runtimeCampaigns.Count} runtime campaigns");
                     
-                    // Validate campaigns
                     int validCampaigns = 0;
                     foreach (var campaign in runtimeCampaigns)
                     {
@@ -123,7 +111,6 @@ namespace BoostOps
             {
                 BoostOpsLogger.LogError("UnityRemoteConfig", $"Failed to parse configuration using shared model: {ex.Message}");
                 
-                // Fallback to original parser as last resort
                 try
                 {
                     BoostOpsLogger.LogDebug("UnityRemoteConfig", "Attempting fallback to original parser");
@@ -139,10 +126,6 @@ namespace BoostOps
             }
         }
         
-        /// <summary>
-        /// Convert shared config model campaigns to runtime Campaign objects
-        /// NOTE: This method is now obsolete since we unified the Campaign class
-        /// </summary>
         private List<Campaign> ConvertToRuntimeCampaigns(List<BoostOps.Campaign> sharedCampaigns)
         {
             var runtimeCampaigns = new List<Campaign>();
@@ -153,7 +136,6 @@ namespace BoostOps
                 {
                     BoostOpsLogger.LogDebug("UnityRemoteConfig", $"Converting shared campaign: {sharedCampaign.campaign_id}");
                     
-                    // Create runtime campaign with data from shared model
                     var runtimeCampaign = new Campaign
                     {
                         campaign_id = sharedCampaign.campaign_id,
@@ -163,7 +145,6 @@ namespace BoostOps
                         updated_at = sharedCampaign.updated_at
                     };
                     
-                    // Convert schedule if available
                     if (sharedCampaign.schedule != null)
                     {
                         runtimeCampaign.schedule = new CampaignSchedule
@@ -178,7 +159,6 @@ namespace BoostOps
                         BoostOpsLogger.LogDebug("UnityRemoteConfig", $"  Schedule - Start: {runtimeCampaign.schedule.start_date}, Days: [{string.Join(",", runtimeCampaign.schedule.days)}]");
                     }
                     
-                    // Convert target project
                     if (sharedCampaign.target_project != null)
                     {
                         runtimeCampaign.target_project = new TargetProject
@@ -186,7 +166,6 @@ namespace BoostOps
                             project_id = sharedCampaign.target_project.project_id
                         };
                         
-                        // Convert store URLs (using StoreLinks which is the runtime class name)
                         if (sharedCampaign.target_project.store_urls != null)
                         {
                             runtimeCampaign.target_project.store_urls = new StoreUrls
@@ -201,7 +180,6 @@ namespace BoostOps
                             BoostOpsLogger.LogDebug("UnityRemoteConfig", $"  Store URLs - Apple: {runtimeCampaign.target_project.store_urls.apple}, Google: {runtimeCampaign.target_project.store_urls.google}");
                         }
                         
-                        // Convert creatives if available (runtime uses Creative[] arrays, not Lists)
                         if (sharedCampaign.target_project.creatives != null && sharedCampaign.target_project.creatives.Length > 0)
                         {
                             var runtimeCreatives = new List<Creative>();
@@ -214,7 +192,6 @@ namespace BoostOps
                                     orientation = sharedCreative.orientation,
                                     prefetch = sharedCreative.prefetch,
                                     ttl_hours = sharedCreative.ttl_hours
-                                    // Note: runtime Creative doesn't have 'required' or 'hosted_by' properties
                                 };
                                 
                                 if (sharedCreative.variants != null && sharedCreative.variants.Length > 0)
@@ -230,18 +207,16 @@ namespace BoostOps
                                             local_key = sharedVariant.local_key
                                         });
                                     }
-                                    runtimeCreative.variants = runtimeVariants.ToArray(); // Convert List to array
+                                    runtimeCreative.variants = runtimeVariants.ToArray();
                                 }
                                 
                                 runtimeCreatives.Add(runtimeCreative);
                             }
                             
-                            runtimeCampaign.target_project.creatives = runtimeCreatives.ToArray(); // Convert List to array
+                            runtimeCampaign.target_project.creatives = runtimeCreatives.ToArray();
                             BoostOpsLogger.LogDebug("UnityRemoteConfig", $"  Converted {runtimeCreatives.Count} creatives");
                         }
                     }
-                    
-                    // Frequency cap conversion removed - internal functionality handled in DLL
                     
                     runtimeCampaigns.Add(runtimeCampaign);
                     BoostOpsLogger.LogDebug("UnityRemoteConfig", $"Successfully converted campaign: {runtimeCampaign.campaign_id}");
@@ -255,9 +230,6 @@ namespace BoostOps
             return runtimeCampaigns;
         }
         
-        /// <summary>
-        /// Convert string days list to int array for runtime model
-        /// </summary>
         private int[] ConvertStringDaysToIntArray(List<string> stringDays)
         {
             if (stringDays == null || stringDays.Count == 0)
@@ -274,15 +246,11 @@ namespace BoostOps
             return intDays.ToArray();
         }
         
-        /// <summary>
-        /// Save runtime-retrieved config to EditorPrefs for editor window access
-        /// </summary>
         private void SaveRuntimeConfigToEditorPrefs(string configKey, string configJson)
         {
             try
             {
 #if UNITY_EDITOR
-                // Save the config JSON and metadata to EditorPrefs
                 string pk = $"BoostOps_{UnityEngine.Application.dataPath}_";
                 UnityEditor.EditorPrefs.SetString(pk + "RuntimeConfig_JSON", configJson ?? "{}");
                 UnityEditor.EditorPrefs.SetString(pk + "RuntimeConfig_Key", configKey ?? "");
@@ -298,14 +266,10 @@ namespace BoostOps
             }
         }
 
-        /// <summary>
-        /// Convert from BoostOps.Core.Campaign (used for JSON deserialization) to BoostOps.Campaign (used for runtime)
-        /// </summary>
         private Campaign ConvertCoreToRuntimeCampaign(BoostOps.Core.Campaign coreCampaign)
         {
             var campaign = new Campaign();
             
-            // Basic fields
             campaign.campaign_id = coreCampaign.campaign_id;
             campaign.name = coreCampaign.name;
             campaign.status = coreCampaign.status;
@@ -314,7 +278,6 @@ namespace BoostOps
             campaign.created_at = coreCampaign.created_at;
             campaign.updated_at = coreCampaign.updated_at;
             
-            // Frequency cap
             if (coreCampaign.frequency_cap != null)
             {
                 campaign.frequency_cap = new BoostOps.Core.FrequencyCapJson
@@ -324,13 +287,11 @@ namespace BoostOps
                 };
             }
             
-            // Target project
             if (coreCampaign.target_project != null)
             {
                 campaign.target_project = new TargetProject();
                 campaign.target_project.project_id = coreCampaign.target_project.project_id;
                 
-                // Store URLs
                 if (coreCampaign.target_project.store_urls != null)
                 {
                     campaign.target_project.store_urls = new StoreUrls
@@ -344,7 +305,6 @@ namespace BoostOps
                     };
                 }
                 
-                // Store IDs
                 if (coreCampaign.target_project.store_ids != null)
                 {
                     campaign.target_project.store_ids = new StoreIds
@@ -357,7 +317,6 @@ namespace BoostOps
                     };
                 }
                 
-                // Platform IDs
                 if (coreCampaign.target_project.platform_ids != null)
                 {
                     campaign.target_project.platform_ids = new PlatformIds
@@ -367,7 +326,6 @@ namespace BoostOps
                     };
                 }
                 
-                // Creatives (simplified conversion)
                 if (coreCampaign.target_project.creatives != null && coreCampaign.target_project.creatives.Length > 0)
                 {
                     campaign.target_project.creatives = coreCampaign.target_project.creatives.Select(coreCreative =>
@@ -395,4 +353,27 @@ namespace BoostOps
             return campaign;
         }
     }
-} 
+#else
+    /// <summary>
+    /// Unity Remote Config provider stub (when package is not installed)
+    /// </summary>
+    public class UnityRemoteConfigProvider : IRemoteConfigProvider
+    {
+        public string ProviderName => "Unity Remote Config (Not Available)";
+        public bool IsAvailable => false;
+
+        public async Task<bool> InitializeAsync()
+        {
+            await Task.CompletedTask;
+            BoostOpsLogger.LogWarning("UnityRemoteConfig", "Unity Remote Config package not installed");
+            return false;
+        }
+
+        public async Task<RemoteConfigResult> FetchAndLoadConfigAsync(string configKey)
+        {
+            await Task.CompletedTask;
+            return RemoteConfigResult.CreateFailure("Unity Remote Config package not installed");
+        }
+    }
+#endif
+}
