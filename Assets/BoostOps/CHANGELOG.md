@@ -2,6 +2,13 @@
 
 All notable changes to the BoostOps Unity SDK will be documented in this file.
 
+## [1.0.5] - 2026-04-21
+
+- Fix UPM package name to match Unity Asset Store listing (`io.boostops.attribution-sdk`)
+- Fix all compile errors for Firebase-only and no-Unity-Services projects
+- Fix compile errors when optional Remote Config packages are not installed
+- Fix Android dependency resolution (play-services-appset, ads-identifier, basement)
+
 ## [1.0.1] - 2026-03-05
 
 - Version bump and package distribution improvements

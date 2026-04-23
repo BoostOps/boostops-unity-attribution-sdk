@@ -852,6 +852,7 @@ namespace BoostOps.Editor
         private string lookupProjectSlug = "";
         private string lookupProjectName = "";
         private string lookupMessage = "";
+        private bool lookupUsedLocalFallback = false;
         private ProjectLookupResponse cachedProjectLookupResponse = null;
         
         // Feature mode states
@@ -879,6 +880,7 @@ namespace BoostOps.Editor
         private string studioId = "";
         private string studioName = "";
         private string studioDescription = "";
+        private string studioTierName = "Free";
         private bool isStudioOwner = false; // Assume owner role for now, can be refined later
         private bool isEditingStudioName = false;
         private string editingStudioName = "";
@@ -1186,6 +1188,20 @@ namespace BoostOps.Editor
                 registrationState = ProjectRegistrationState.Registered;
                 SaveRegistrationState();
             }
+            
+            if (settings != null && !string.IsNullOrEmpty(settings.projectSlug) && string.IsNullOrEmpty(registeredProjectSlug))
+            {
+                registeredProjectSlug = settings.projectSlug;
+            }
+            
+            if (settings != null && hasProjectKey && !hasLookupResponse)
+            {
+                hasLookupResponse = true;
+                lookupProjectFound = true;
+                lookupProjectName = Application.productName;
+                lookupProjectSlug = settings.projectSlug ?? "";
+                lookupMessage = "Project found (from local settings)";
+            }
         }
         
         void LoadServerValidationSettings()
@@ -1298,13 +1314,19 @@ namespace BoostOps.Editor
             var authChip = CreateAuthButton();
             rightContainer.Add(authChip);
             
-            // Sync All button
-            var syncButton = new Button(() => ShowSyncAllDialog()) { text = "🔄 Sync All" };
-            syncButton.style.fontSize = 11;
-            syncButton.style.height = 24;
-            syncButton.style.marginRight = 8;
-            syncButton.style.marginLeft = 8;
-            rightContainer.Add(syncButton);
+            // Refresh button
+            var refreshButton = new Button(() => RefreshFromCloud()) { text = "🔄" };
+            refreshButton.style.fontSize = 14;
+            refreshButton.style.height = 28;
+            refreshButton.style.paddingLeft = 6;
+            refreshButton.style.paddingRight = 6;
+            refreshButton.style.paddingTop = 3;
+            refreshButton.style.paddingBottom = 0;
+            refreshButton.style.marginRight = 8;
+            refreshButton.style.marginLeft = 8;
+            refreshButton.style.alignSelf = Align.Center;
+            refreshButton.tooltip = "Refresh project data, campaigns, and settings from BoostOps";
+            rightContainer.Add(refreshButton);
             
             // Runtime info (Play Mode only)
             if (Application.isPlaying)
@@ -1466,78 +1488,37 @@ namespace BoostOps.Editor
             label.text = $"⚡ Runtime: {linksInfo} • {crossPromoInfo}";
         }
         
-        void ShowSyncAllDialog()
+        async void RefreshFromCloud()
         {
-            // TODO: Implement sync all dialog
-            EditorUtility.DisplayDialog("Sync All Features", "Sync all functionality coming soon!", "OK");
+            if (!isLoggedIn || string.IsNullOrEmpty(apiToken))
+            {
+                EditorUtility.DisplayDialog("Not Signed In", "Please sign in to refresh data from BoostOps.", "OK");
+                return;
+            }
+
+            int currentTab = selectedTab;
+
+            LogDebug("Refresh: Starting data refresh from cloud");
+
+            ProjectLookupResponse lookupResponse = await CheckForExistingProjectWithoutUIRebuild();
+            await LoadCampaignsFromAPI(lookupResponse);
+
+            SafeDelayCall(() => {
+                UpdateStatusLights();
+                switch (currentTab)
+                {
+                    case 0: ShowOverviewPanel(); break;
+                    case 1: ShowLinksPanel(); break;
+                    case 2: ShowCrossPromoPanel(); break;
+                    case 3: ShowIntegrationsPanel(); break;
+                    default: ShowOverviewPanel(); break;
+                }
+                LogDebug("✅ Refresh completed");
+            });
         }
         
-        void BuildFeatureModeHeader(string featureName, FeatureMode currentMode, FeatureStatus status, 
-            int serverRevision, string lastSync, System.Action<FeatureMode> onModeSwitch)
-        {
-            var headerContainer = new VisualElement();
-            headerContainer.style.backgroundColor = new Color(0.2f, 0.2f, 0.2f, 0.8f);
-            headerContainer.style.paddingLeft = 15;
-            headerContainer.style.paddingRight = 15;
-            headerContainer.style.paddingTop = 12;
-            headerContainer.style.paddingBottom = 12;
-            headerContainer.style.marginBottom = 15;
-            headerContainer.style.borderTopLeftRadius = 6;
-            headerContainer.style.borderTopRightRadius = 6;
-            headerContainer.style.borderBottomLeftRadius = 6;
-            headerContainer.style.borderBottomRightRadius = 6;
-            
-            // Top row: Mode toggle and "What ships" info
-            var topRow = new VisualElement();
-            topRow.style.flexDirection = FlexDirection.Row;
-            topRow.style.justifyContent = Justify.SpaceBetween;
-            topRow.style.alignItems = Align.Center;
-            topRow.style.marginBottom = 8;
-            
-            // Mode toggle (segmented control style) - Only show in Self Hosted Config Generator
-            if (isLocalConfigMode)
-            {
-                var modeToggleContainer = new VisualElement();
-                modeToggleContainer.style.flexDirection = FlexDirection.Row;
-                
-                var modeLabel = new Label("Mode:");
-                modeLabel.style.fontSize = 12;
-                modeLabel.style.marginRight = 8;
-                modeLabel.style.alignSelf = Align.Center;
-                modeToggleContainer.Add(modeLabel);
-                
-                var localButton = new Button(() => onModeSwitch(FeatureMode.Local)) { text = "Local" };
-                var managedButton = new Button(() => onModeSwitch(FeatureMode.Managed)) { text = "BoostOps Managed" };
-                
-                // Style the mode toggle buttons with status-matching colors
-                ConfigureModeToggleButton(localButton, currentMode == FeatureMode.Local, FeatureMode.Local);
-                ConfigureModeToggleButton(managedButton, currentMode == FeatureMode.Managed, FeatureMode.Managed);
-                
-                modeToggleContainer.Add(localButton);
-                modeToggleContainer.Add(managedButton);
-                topRow.Add(modeToggleContainer);
-            }
-            
-            // "What ships" banner
-            var shipsInfo = new Label();
-            UpdateShipsInfoLabel(shipsInfo, featureName, status, serverRevision);
-            shipsInfo.style.fontSize = 11;
-            shipsInfo.style.color = new Color(0.6f, 0.8f, 1f, 1f);
-            shipsInfo.style.backgroundColor = new Color(0.1f, 0.3f, 0.5f, 0.3f);
-            shipsInfo.style.paddingLeft = 8;
-            shipsInfo.style.paddingRight = 8;
-            shipsInfo.style.paddingTop = 4;
-            shipsInfo.style.paddingBottom = 4;
-            shipsInfo.style.borderTopLeftRadius = 3;
-            shipsInfo.style.borderTopRightRadius = 3;
-            shipsInfo.style.borderBottomLeftRadius = 3;
-            shipsInfo.style.borderBottomRightRadius = 3;
-            topRow.Add(shipsInfo);
-            
-            headerContainer.Add(topRow);
-            
-            contentContainer.Add(headerContainer);
-        }
+
+
         
         void ConfigureModeToggleButton(Button button, bool isActive, FeatureMode buttonMode)
         {
@@ -1612,56 +1593,11 @@ namespace BoostOps.Editor
             modeContainer.Add(managedButton);
             topRow.Add(modeContainer);
             
-            // "What ships" banner
-            var shipsInfo = new Label();
-            // Get current attribution status
-            var settings = BoostOpsProjectSettings.GetInstance();
-            bool hasProjectKey = settings != null && !string.IsNullOrEmpty(settings.projectKey);
-            
-            if (hasProjectKey)
-            {
-                shipsInfo.text = "🚢 Shipping: Server snapshot (rev 1)";
-            }
-            else
-            {
-                shipsInfo.text = "🚢 Shipping: Not configured";
-            }
-            
-            shipsInfo.style.fontSize = 11;
-            shipsInfo.style.color = new Color(0.6f, 0.8f, 1f, 1f);
-            shipsInfo.style.backgroundColor = new Color(0.1f, 0.3f, 0.5f, 0.3f);
-            shipsInfo.style.paddingLeft = 8;
-            shipsInfo.style.paddingRight = 8;
-            shipsInfo.style.paddingTop = 4;
-            shipsInfo.style.paddingBottom = 4;
-            shipsInfo.style.borderTopLeftRadius = 3;
-            shipsInfo.style.borderTopRightRadius = 3;
-            shipsInfo.style.borderBottomLeftRadius = 3;
-            shipsInfo.style.borderBottomRightRadius = 3;
-            topRow.Add(shipsInfo);
-            
             headerContainer.Add(topRow);
             
             contentContainer.Add(headerContainer);
         }
         
-        void UpdateShipsInfoLabel(Label label, string featureName, FeatureStatus status, int serverRevision)
-        {
-            string shipsText = "";
-            switch (status)
-            {
-                case FeatureStatus.Local:
-                    shipsText = "🚢 Shipping: Local files";
-                    break;
-                case FeatureStatus.Managed:
-                    shipsText = $"🚢 Shipping: Server snapshot (rev {serverRevision})";
-                    break;
-                case FeatureStatus.Error:
-                    shipsText = "🚢 Shipping: Cached fallback";
-                    break;
-            }
-            label.text = shipsText;
-        }
         
         void UpdateManagedStatusLabel(Label label, FeatureStatus status, int serverRevision, string lastSync)
         {
@@ -1804,7 +1740,7 @@ namespace BoostOps.Editor
                     ShowCrossPromoPanel();
                     
                     // Note: Don't automatically trigger lookup here to avoid infinite loops
-                    // User can use "Fetch Campaigns" button to manually refresh data
+                    // User can use the refresh button in the header to manually refresh data
                 });
             }
             else
@@ -1984,14 +1920,20 @@ namespace BoostOps.Editor
             spacer.style.flexGrow = 1;
             headerContainer.Add(spacer);
 
-            // Sync button (only if logged in and registered)
-            if (isLoggedIn && registrationState == ProjectRegistrationState.Activated)
+            // Refresh button (visible when logged in)
+            if (isLoggedIn)
             {
-                var syncButton = new Button(() => ShowSyncAllDialog()) { text = "🔄 Sync" };
-                syncButton.style.fontSize = 10;
-                syncButton.style.height = 24;
-                syncButton.style.marginRight = 8;
-                headerContainer.Add(syncButton);
+                var refreshButton = new Button(() => RefreshFromCloud()) { text = "🔄" };
+                refreshButton.style.fontSize = 14;
+                refreshButton.style.height = 28;
+                refreshButton.style.paddingLeft = 6;
+                refreshButton.style.paddingRight = 6;
+                refreshButton.style.paddingTop = 3;
+                refreshButton.style.paddingBottom = 0;
+                refreshButton.style.marginRight = 4;
+                refreshButton.style.alignSelf = Align.Center;
+                refreshButton.tooltip = "Refresh project data, campaigns, and settings from BoostOps";
+                headerContainer.Add(refreshButton);
             }
 
             // Account/Auth button
@@ -2013,17 +1955,33 @@ namespace BoostOps.Editor
             planPill.style.borderBottomLeftRadius = 12;
             planPill.style.borderBottomRightRadius = 12;
 
-            var planLabel = new Label("Free");
+            var planLabel = new Label(studioTierName ?? "Free");
             planLabel.style.fontSize = 11;
             planLabel.style.color = new Color(0.8f, 0.8f, 0.8f, 1f);
             planLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
             planPill.Add(planLabel);
 
-            var ingestLabel = new Label("🟢 Ingest: OK");
-            ingestLabel.style.fontSize = 11;
-            ingestLabel.style.color = new Color(0.7f, 0.9f, 0.7f, 1f);
-            ingestLabel.style.marginLeft = 8;
-            planPill.Add(ingestLabel);
+            var separator = new Label("•");
+            separator.style.fontSize = 11;
+            separator.style.color = new Color(0.5f, 0.5f, 0.5f, 1f);
+            separator.style.marginLeft = 6;
+            separator.style.marginRight = 6;
+            planPill.Add(separator);
+
+            var dashLabel = new Label("Dashboard ↗");
+            dashLabel.style.fontSize = 11;
+            dashLabel.style.color = new Color(0.5f, 0.8f, 1f, 1f);
+            dashLabel.AddManipulator(new Clickable(() => {
+                var settings = BoostOpsProjectSettings.GetInstance();
+                string pid = settings?.projectId;
+                if (!string.IsNullOrEmpty(pid))
+                    Application.OpenURL($"https://app.boostops.io/project/{pid}");
+                else
+                    Application.OpenURL("https://app.boostops.io");
+            }));
+            dashLabel.RegisterCallback<MouseOverEvent>(evt => dashLabel.style.color = new Color(0.7f, 0.9f, 1f, 1f));
+            dashLabel.RegisterCallback<MouseOutEvent>(evt => dashLabel.style.color = new Color(0.5f, 0.8f, 1f, 1f));
+            planPill.Add(dashLabel);
 
             headerContainer.Add(planPill);
             parent.Add(headerContainer);
@@ -2102,14 +2060,20 @@ namespace BoostOps.Editor
             spacer.style.flexGrow = 1;
             headerContainer.Add(spacer);
 
-            // Sync button (only if logged in and registered)
-            if (isLoggedIn && registrationState == ProjectRegistrationState.Activated)
+            // Refresh button (visible when logged in)
+            if (isLoggedIn)
             {
-                var syncButton = new Button(() => ShowSyncAllDialog()) { text = "🔄 Sync" };
-                syncButton.style.fontSize = 10;
-                syncButton.style.height = 24;
-                syncButton.style.marginRight = 8;
-                headerContainer.Add(syncButton);
+                var refreshButton = new Button(() => RefreshFromCloud()) { text = "🔄" };
+                refreshButton.style.fontSize = 14;
+                refreshButton.style.height = 28;
+                refreshButton.style.paddingLeft = 6;
+                refreshButton.style.paddingRight = 6;
+                refreshButton.style.paddingTop = 3;
+                refreshButton.style.paddingBottom = 0;
+                refreshButton.style.marginRight = 4;
+                refreshButton.style.alignSelf = Align.Center;
+                refreshButton.tooltip = "Refresh project data, campaigns, and settings from BoostOps";
+                headerContainer.Add(refreshButton);
             }
 
             // Account/Auth button
@@ -2130,24 +2094,33 @@ namespace BoostOps.Editor
             planPill.style.borderBottomLeftRadius = 12;
             planPill.style.borderBottomRightRadius = 12;
 
-            var planLabel = new Label("Free");
+            var planLabel = new Label(studioTierName ?? "Free");
             planLabel.style.fontSize = 11;
             planLabel.style.color = new Color(0.8f, 0.8f, 0.8f, 1f);
             planLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
             planPill.Add(planLabel);
 
-            // Add separator and status
             var separator = new Label("•");
             separator.style.fontSize = 11;
-            separator.style.color = new Color(0.6f, 0.6f, 0.6f, 1f);
+            separator.style.color = new Color(0.5f, 0.5f, 0.5f, 1f);
             separator.style.marginLeft = 6;
             separator.style.marginRight = 6;
             planPill.Add(separator);
 
-            var statusLabel = new Label("📡 Ingest: OK");
-            statusLabel.style.fontSize = 11;
-            statusLabel.style.color = new Color(0.6f, 1f, 0.6f, 1f);
-            planPill.Add(statusLabel);
+            var dashLabel = new Label("Dashboard ↗");
+            dashLabel.style.fontSize = 11;
+            dashLabel.style.color = new Color(0.5f, 0.8f, 1f, 1f);
+            dashLabel.AddManipulator(new Clickable(() => {
+                var settings = BoostOpsProjectSettings.GetInstance();
+                string pid = settings?.projectId;
+                if (!string.IsNullOrEmpty(pid))
+                    Application.OpenURL($"https://app.boostops.io/project/{pid}");
+                else
+                    Application.OpenURL("https://app.boostops.io");
+            }));
+            dashLabel.RegisterCallback<MouseOverEvent>(evt => dashLabel.style.color = new Color(0.7f, 0.9f, 1f, 1f));
+            dashLabel.RegisterCallback<MouseOutEvent>(evt => dashLabel.style.color = new Color(0.5f, 0.8f, 1f, 1f));
+            planPill.Add(dashLabel);
 
             headerContainer.Add(planPill);
 
@@ -2189,13 +2162,11 @@ namespace BoostOps.Editor
             upsellLabel.style.color = new Color(0.9f, 0.9f, 0.9f, 1f); // Much brighter white for better contrast
             bottomUpsellBar.Add(upsellLabel);
 
-            var enableCloudButton = new Button(() => {
-                hostingOption = HostingOption.Cloud;
-                SaveHostingOption();
-                RefreshDomainAndUsageContent(); // Refresh only left side content
-            }) { text = "Try Cloud Features →" };
-            enableCloudButton.style.width = 180;
-            bottomUpsellBar.Add(enableCloudButton);
+            var dashboardButton = new Button(() => {
+                Application.OpenURL("https://app.boostops.io");
+            }) { text = "Open Dashboard →" };
+            dashboardButton.style.width = 180;
+            bottomUpsellBar.Add(dashboardButton);
 
             // Only show for local mode or when not logged in
             UpdateBottomUpsellBarVisibility();
@@ -2342,10 +2313,6 @@ namespace BoostOps.Editor
 
         void BuildDynamicLinksPanel()
         {
-            // Add mode toggle and "What ships" banner at the top
-            BuildFeatureModeHeader("Links", linksMode, linksStatus, linksServerRevision, linksLastSync, 
-                (mode) => SwitchLinksMode(mode));
-            
             // Hero section with prominent logo
             var heroSection = new VisualElement();
             heroSection.style.flexDirection = FlexDirection.Row;
@@ -2394,14 +2361,6 @@ namespace BoostOps.Editor
             generateButton.style.backgroundColor = new Color(0.1f, 0.6f, 0.1f, 1f);
             generateButton.style.marginRight = 10;
             buttonsContainer.Add(generateButton);
-            
-            // Open Dashboard button
-            var dashboardButton = new Button(() => OpenDashboard("links")) { text = "🌐 Open Dashboard" };
-            dashboardButton.style.width = 150;
-            dashboardButton.style.height = 32;
-            dashboardButton.style.fontSize = 12;
-            dashboardButton.style.backgroundColor = new Color(0.2f, 0.5f, 0.8f, 1f);
-            buttonsContainer.Add(dashboardButton);
             
             heroSection.Add(buttonsContainer);
             contentContainer.Add(heroSection);
@@ -3129,10 +3088,6 @@ namespace BoostOps.Editor
             }
             LogDebug($"   Cross-promo last sync: '{crossPromoLastSync}'");
             
-            // Add mode toggle and "What ships" banner at the top
-            BuildFeatureModeHeader("Cross-Promo", crossPromoMode, crossPromoStatus, crossPromoServerRevision, crossPromoLastSync, 
-                (mode) => SwitchCrossPromoMode(mode));
-            
             // Hero section with card styling (matching Links and Integration Detection pages)
             var heroSection = new VisualElement();
             heroSection.style.flexDirection = FlexDirection.Row;
@@ -3191,72 +3146,7 @@ namespace BoostOps.Editor
             }
             else
             {
-                // Button container for Managed mode buttons
-                var buttonContainer = new VisualElement();
-                buttonContainer.style.flexDirection = FlexDirection.Row;
-                buttonContainer.style.alignSelf = Align.Center;
-                buttonContainer.style.alignItems = Align.Center;
-                
-                // Sync button for Managed mode
-                var syncButton = new Button(async () => {
-                    LogDebug("Fetch button: Starting campaign fetch from cloud (read-only)");
-                    
-                    // Remember current tab to ensure we stay on Cross-Promo
-                    int currentTab = selectedTab;
-                    
-                    // Always refresh from BoostOps API first (to update cross_promo_server.json)
-                    ProjectLookupResponse lookupResponse = null;
-                    if (isLoggedIn && !string.IsNullOrEmpty(apiToken))
-                    {
-                        LogDebug("Fetch button: Step 1 - Fetching from BoostOps API to update local cache");
-                        lookupResponse = await CheckForExistingProjectWithoutUIRebuild();
-                    }
-                    
-                    // In editor mode, ALWAYS use BoostOps lookup response as source of truth
-                    LogDebug("Fetch button: Step 2 - Fetching campaigns from BoostOps API (cloud is source of truth)");
-                    await LoadCampaignsFromAPI(lookupResponse);
-                    
-                    // Force comprehensive UI refresh after fetch (all tabs and status indicators)
-                    SafeDelayCall(() => {
-                        LogDebug("Fetch button: Performing comprehensive UI refresh after fetch");
-                        
-                        // Update all status indicators and global state
-                        UpdateStatusLights();
-                        
-                        // Refresh the current tab to show new data
-                        switch (currentTab)
-                        {
-                            case 0: 
-                                LogDebug("Refreshing Overview panel to show updated Source Project Settings");
-                                ShowOverviewPanel(); 
-                                break;
-                            case 1: 
-                                ShowLinksPanel(); 
-                                break;
-                            case 2: 
-                                LogDebug("Refreshing Cross-Promo panel to show updated campaigns");
-                                ShowCrossPromoPanel(); 
-                                break;
-                            case 3: 
-                                ShowIntegrationsPanel(); 
-                                break;
-                            default: 
-                                ShowOverviewPanel(); 
-                                break;
-                        }
-                        
-                        LogDebug($"✅ Comprehensive UI refresh completed for tab {currentTab}");
-                    });
-                }) { text = "📥 Fetch Campaigns" };
-                syncButton.style.width = 140;
-                syncButton.style.height = 32;
-                syncButton.style.fontSize = 12;
-                syncButton.style.backgroundColor = new Color(0.2f, 0.5f, 0.8f, 1f);
-                syncButton.tooltip = (hasUnityRemoteConfig || hasFirebaseRemoteConfig) ? 
-                    "Fetch latest campaigns and settings from BoostOps cloud (read-only)" : 
-                    "Fetch latest campaigns and settings from BoostOps server (read-only)";
-                
-                // Import Registered Apps button
+                // Cache App Icons button
                 var importButton = new Button(() => {
                     _ = ShowImportRegisteredAppsDialog();
                 }) { text = "💾 Cache App Icons" };
@@ -3264,12 +3154,9 @@ namespace BoostOps.Editor
                 importButton.style.height = 32;
                 importButton.style.fontSize = 12;
                 importButton.style.backgroundColor = new Color(0.1f, 0.6f, 0.1f, 1f);
-                importButton.style.marginLeft = 10;
+                importButton.style.alignSelf = Align.Center;
                 importButton.tooltip = "Pre-cache app icons from all registered apps in your studio";
-                
-                buttonContainer.Add(syncButton);
-                buttonContainer.Add(importButton);
-                heroSection.Add(buttonContainer);
+                heroSection.Add(importButton);
                 
                 // Clear generate button reference since we're in managed mode
                 generateJsonButton = null;
@@ -3306,9 +3193,19 @@ namespace BoostOps.Editor
             }
         }
         
+        bool HasMeaningfulSourceProjectData()
+        {
+            if (cachedSourceProject == null) return false;
+            return !string.IsNullOrEmpty(cachedSourceProject.name) ||
+                   !string.IsNullOrEmpty(cachedSourceProject.bundle_id) ||
+                   cachedSourceProject.min_sessions > 0 ||
+                   cachedSourceProject.min_player_days > 0 ||
+                   (cachedSourceProject.store_ids != null && cachedSourceProject.store_ids.Count > 0);
+        }
+
         void BuildManagedSourceProjectSettings(VisualElement parent)
         {
-            if (cachedSourceProject == null)
+            if (!HasMeaningfulSourceProjectData())
             {
                 // Show placeholder if no source project data available yet
                 var placeholderContainer = new VisualElement();
@@ -3700,7 +3597,7 @@ namespace BoostOps.Editor
                 noDataLabel.style.marginBottom = 10;
                 noDataContainer.Add(noDataLabel);
                 
-                var instructionLabel = new Label("Click \"📥 Fetch Campaigns\" above to load campaign data from the BoostOps API.\n\nIn Managed mode, campaign data comes from your BoostOps project configuration.");
+                var instructionLabel = new Label("Click the 🔄 refresh button in the top menu to load campaign data from the BoostOps API.\n\nIn Managed mode, campaign data comes from your BoostOps project configuration.");
                 instructionLabel.style.fontSize = 12;
                 instructionLabel.style.color = new Color(0.7f, 0.8f, 0.9f, 1f);
                 instructionLabel.style.whiteSpace = WhiteSpace.Normal;
@@ -3752,14 +3649,14 @@ namespace BoostOps.Editor
                     string placeholderText;
                     if (isLoggedIn)
                     {
-                        placeholderText = "No campaigns found. Click 'Sync Campaigns' above to fetch campaigns from BoostOps API.\n\n" +
+                        placeholderText = "No campaigns found. Click the 🔄 refresh button in the top menu to fetch campaigns from BoostOps API.\n\n" +
                                          "• Campaigns are managed through the BoostOps Dashboard\n" +
                                          "• They sync directly from BoostOps servers\n" +
                                          "• Icons are downloaded and cached locally";
                     }
                     else
                     {
-                        placeholderText = "No campaigns found. Sign in and click 'Sync Campaigns' to fetch from BoostOps API, or configure remote config.\n\n" +
+                        placeholderText = "No campaigns found. Sign in and click the 🔄 refresh button to fetch from BoostOps API, or configure remote config.\n\n" +
                                          "• BoostOps API: Direct sync from dashboard (recommended)\n" +
                                          "• Remote Config: Unity/Firebase fallback method\n" +
                                          "• Icons are downloaded and cached locally";
@@ -3806,7 +3703,7 @@ namespace BoostOps.Editor
             title.style.color = new Color(0.9f, 0.95f, 1f, 1f);
             titleRow.Add(title);
             
-            // Button container for help only (refresh is handled by main "Fetch Campaigns" button)
+            // Button container for help only (refresh is handled by header refresh button)
             var buttonContainer = new VisualElement();
             buttonContainer.style.flexDirection = FlexDirection.Row;
             buttonContainer.style.alignItems = Align.Center;
@@ -3828,7 +3725,7 @@ namespace BoostOps.Editor
             appWallContainer.Add(titleRow);
             
             // Description
-            var description = new Label("App Walls display a grid of apps for cross-promotion. Configuration is managed through the app_walls section in remote config.\n\n💡 Use the \"📥 Fetch Campaigns\" button above to refresh both campaigns and app walls.");
+            var description = new Label("App Walls display a grid of apps for cross-promotion. Configuration is managed through the app_walls section in remote config.\n\n💡 Use the 🔄 refresh button in the top menu to refresh both campaigns and app walls.");
             description.style.fontSize = 12;
             description.style.color = new Color(0.8f, 0.85f, 0.9f, 1f);
             description.style.whiteSpace = WhiteSpace.Normal;
@@ -4026,7 +3923,7 @@ namespace BoostOps.Editor
                 noConfigLabel.style.marginBottom = 5;
                 noConfigContainer.Add(noConfigLabel);
                 
-                var instructionLabel = new Label("App walls are configured through the app_walls section in remote config. Click 'Fetch Campaigns' to load and cache the configuration.");
+                var instructionLabel = new Label("App walls are configured through the app_walls section in remote config. Click the 🔄 refresh button in the top menu to load and cache the configuration.");
                 instructionLabel.style.fontSize = 11;
                 instructionLabel.style.color = new Color(0.6f, 0.7f, 0.8f);
                 instructionLabel.style.whiteSpace = WhiteSpace.Normal;
@@ -4046,7 +3943,7 @@ namespace BoostOps.Editor
                 "Configuration:\n" +
                 "• Managed through remote config (app_walls section)\n" +
                 "• Automatically cached for offline use\n" +
-                "• Click 'Fetch Campaigns' to update the cache\n\n" +
+                "• Click the 🔄 refresh button to update the cache\n\n" +
                 "Documentation:\n" +
                 "• See APP_WALL_SETUP_GUIDE.md for setup instructions\n" +
                 "• See APP_WALL_OFFLINE_CACHING.md for cache details\n\n" +
@@ -4181,34 +4078,76 @@ namespace BoostOps.Editor
         
         void BuildManagedLinksContent()
         {
-            // First, always show project lookup status when we have lookup response data
+            // Ensure we have lookup state from local settings if API hasn't run yet
+            if (!hasLookupResponse)
+            {
+                var localSettings = BoostOpsProjectSettings.GetInstance();
+                if (localSettings != null && !string.IsNullOrEmpty(localSettings.projectKey))
+                {
+                    hasLookupResponse = true;
+                    lookupProjectFound = true;
+                    lookupProjectName = Application.productName;
+                    lookupProjectSlug = localSettings.projectSlug ?? "";
+                    lookupMessage = "Project found (from local settings)";
+                    if (string.IsNullOrEmpty(registeredProjectSlug) && !string.IsNullOrEmpty(localSettings.projectSlug))
+                    {
+                        registeredProjectSlug = localSettings.projectSlug;
+                    }
+                }
+            }
+            
+            var rowContainer = new VisualElement();
+            rowContainer.style.flexDirection = FlexDirection.Row;
+            rowContainer.style.alignItems = Align.Stretch;
+            rowContainer.style.marginTop = 20;
+            rowContainer.style.marginBottom = 10;
+
+            // Left side - Project lookup status
+            var leftCard = new VisualElement();
+            leftCard.style.width = Length.Percent(50);
+            leftCard.style.flexShrink = 0;
+            leftCard.style.marginRight = 5;
+            
             if (hasLookupResponse)
             {
-                BuildProjectLookupStatus();
+                BuildProjectLookupStatus(leftCard);
             }
             
-            // Check if we have a configured project slug
-            bool hasConfiguredSlug = !string.IsNullOrEmpty(registeredProjectSlug);
+            rowContainer.Add(leftCard);
             
-            if (hasConfiguredSlug)
-            {
-                // Slug configured - show read-only display with testing
-                BuildManagedLinksConfigured();
-            }
+            // Right side - QR Code Testing
+            var rightCard = new VisualElement();
+            rightCard.style.flexDirection = FlexDirection.Column;
+            rightCard.style.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 0.3f);
+            rightCard.style.paddingLeft = 15;
+            rightCard.style.paddingRight = 15;
+            rightCard.style.paddingTop = 15;
+            rightCard.style.paddingBottom = 15;
+            rightCard.style.borderTopLeftRadius = 8;
+            rightCard.style.borderTopRightRadius = 8;
+            rightCard.style.borderBottomLeftRadius = 8;
+            rightCard.style.borderBottomRightRadius = 8;
+            rightCard.style.width = Length.Percent(50);
+            rightCard.style.flexShrink = 0;
+            rightCard.style.marginLeft = 5;
+            
+            BuildQRCodeTestingContent(rightCard);
+            
+            rowContainer.Add(rightCard);
+            contentContainer.Add(rowContainer);
         }
         
-        void BuildProjectLookupStatus()
+        void BuildProjectLookupStatus(VisualElement parent)
         {
             var lookupContainer = new VisualElement();
-            lookupContainer.style.backgroundColor = lookupProjectFound ? 
-                new Color(0.1f, 0.4f, 0.1f, 0.3f) : // Green tint for found projects
-                new Color(0.4f, 0.2f, 0.1f, 0.3f);   // Orange tint for not found
+            lookupContainer.style.flexGrow = 1;
+            lookupContainer.style.backgroundColor = lookupProjectFound ?
+                new Color(0.1f, 0.4f, 0.1f, 0.3f) :
+                new Color(0.4f, 0.2f, 0.1f, 0.3f);
             lookupContainer.style.paddingLeft = 20;
             lookupContainer.style.paddingRight = 20;
             lookupContainer.style.paddingTop = 15;
             lookupContainer.style.paddingBottom = 15;
-            lookupContainer.style.marginTop = 20;
-            lookupContainer.style.marginBottom = 15;
             lookupContainer.style.borderTopLeftRadius = 8;
             lookupContainer.style.borderTopRightRadius = 8;
             lookupContainer.style.borderBottomLeftRadius = 8;
@@ -4224,6 +4163,29 @@ namespace BoostOps.Editor
                 new Color(1f, 0.9f, 0.7f);
             lookupContainer.Add(statusTitle);
             
+            if (lookupUsedLocalFallback && lookupProjectFound)
+            {
+                var warningBox = new VisualElement();
+                warningBox.style.backgroundColor = new Color(0.6f, 0.4f, 0.1f, 0.4f);
+                warningBox.style.paddingLeft = 10;
+                warningBox.style.paddingRight = 10;
+                warningBox.style.paddingTop = 8;
+                warningBox.style.paddingBottom = 8;
+                warningBox.style.borderTopLeftRadius = 4;
+                warningBox.style.borderTopRightRadius = 4;
+                warningBox.style.borderBottomLeftRadius = 4;
+                warningBox.style.borderBottomRightRadius = 4;
+                warningBox.style.marginBottom = 12;
+
+                var warningLabel = new Label($"⚠️ The BoostOps server could not find this project for the currently logged-in account ({userEmail ?? "unknown"}). Showing cached local data. You may be signed into the wrong account.");
+                warningLabel.style.fontSize = 11;
+                warningLabel.style.color = new Color(1f, 0.9f, 0.6f);
+                warningLabel.style.whiteSpace = WhiteSpace.Normal;
+                warningBox.Add(warningLabel);
+
+                lookupContainer.Add(warningBox);
+            }
+
             // Project details (if found)
             if (lookupProjectFound)
             {
@@ -4266,21 +4228,34 @@ namespace BoostOps.Editor
                     
                     lookupContainer.Add(slugRow);
                     
-                    // Show the full dynamic link domain
-                    var domainRow = new VisualElement();
-                    domainRow.style.flexDirection = FlexDirection.Row;
-                    domainRow.style.marginBottom = 8;
-                    
-                    var domainLabel = new Label("Link Domain:");
-                    domainLabel.style.minWidth = 120;
-                    domainLabel.style.color = new Color(0.8f, 0.8f, 0.8f);
-                    domainRow.Add(domainLabel);
-                    
-                    var domainValue = new Label($"{lookupProjectSlug}.boostlink.me");
-                    domainValue.style.color = new Color(0.7f, 0.9f, 1f);
-                    domainRow.Add(domainValue);
-                    
-                    lookupContainer.Add(domainRow);
+                    // Show all configured link domains
+                    var configuredDomains = new List<string>();
+                    if (dynamicLinksConfig != null)
+                    {
+                        configuredDomains = dynamicLinksConfig.GetAllHosts();
+                    }
+                    if (configuredDomains.Count == 0 && !string.IsNullOrEmpty(lookupProjectSlug))
+                    {
+                        configuredDomains.Add($"{lookupProjectSlug}.boostlink.me");
+                    }
+
+                    for (int i = 0; i < configuredDomains.Count; i++)
+                    {
+                        var domainRow = new VisualElement();
+                        domainRow.style.flexDirection = FlexDirection.Row;
+                        domainRow.style.marginBottom = 8;
+
+                        var domainLabel = new Label(i == 0 ? "Link Domains:" : "");
+                        domainLabel.style.minWidth = 120;
+                        domainLabel.style.color = new Color(0.8f, 0.8f, 0.8f);
+                        domainRow.Add(domainLabel);
+
+                        var domainValue = new Label(configuredDomains[i]);
+                        domainValue.style.color = new Color(0.7f, 0.9f, 1f);
+                        domainRow.Add(domainValue);
+
+                        lookupContainer.Add(domainRow);
+                    }
                 }
                 else
                 {
@@ -4308,128 +4283,87 @@ namespace BoostOps.Editor
                 }
                 
                 // Apple Team ID section (Signing Team ID)
-                var teamIdSectionTitle = new Label("Signing Team ID (Apple Team ID):");
-                teamIdSectionTitle.style.fontSize = 13;
-                teamIdSectionTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
-                teamIdSectionTitle.style.color = new Color(0.9f, 0.9f, 0.9f);
-                teamIdSectionTitle.style.marginTop = 15;
-                teamIdSectionTitle.style.marginBottom = 8;
-                lookupContainer.Add(teamIdSectionTitle);
-                
-                // Get current values
                 string editorTeamId = GetEditorAppleTeamId();
                 string serverTeamId = GetServerAppleTeamId(cachedProjectLookupResponse);
-                bool hasMismatch = HasAppleTeamIdMismatch(editorTeamId, serverTeamId);
+                bool hasServerData = cachedProjectLookupResponse != null;
                 
-                // Editor Team ID (build-time)
-                var editorRow = new VisualElement();
-                editorRow.style.flexDirection = FlexDirection.Row;
-                editorRow.style.marginBottom = 6;
-                editorRow.style.marginLeft = 10;
-                
-                var editorLabel = new Label("Editor (build-time):");
-                editorLabel.style.minWidth = 140;
-                editorLabel.style.fontSize = 11;
-                editorLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
-                editorRow.Add(editorLabel);
-                
-                var editorValue = new Label(string.IsNullOrEmpty(editorTeamId) ? "Not set" : editorTeamId);
-                editorValue.style.fontSize = 11;
-                editorValue.style.color = string.IsNullOrEmpty(editorTeamId) ? 
-                    new Color(1f, 0.7f, 0.4f) : 
-                    new Color(0.8f, 1f, 0.8f);
-                editorValue.style.unityFontStyleAndWeight = string.IsNullOrEmpty(editorTeamId) ? 
-                    FontStyle.Italic : FontStyle.Bold;
-                editorRow.Add(editorValue);
-                
-                lookupContainer.Add(editorRow);
-                
-                // Server Team ID (read-only)
-                var serverRow = new VisualElement();
-                serverRow.style.flexDirection = FlexDirection.Row;
-                serverRow.style.marginBottom = 6;
-                serverRow.style.marginLeft = 10;
-                
-                var serverLabel = new Label("Server (read-only):");
-                serverLabel.style.minWidth = 140;
-                serverLabel.style.fontSize = 11;
-                serverLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
-                serverRow.Add(serverLabel);
-                
-                var serverValue = new Label(string.IsNullOrEmpty(serverTeamId) ? "Not configured" : serverTeamId);
-                serverValue.style.fontSize = 11;
-                serverValue.style.color = string.IsNullOrEmpty(serverTeamId) ? 
-                    new Color(0.6f, 0.6f, 0.6f) : 
-                    new Color(0.7f, 0.9f, 1f);
-                serverValue.style.unityFontStyleAndWeight = string.IsNullOrEmpty(serverTeamId) ? 
-                    FontStyle.Italic : FontStyle.Bold;
-                serverRow.Add(serverValue);
-                
-                lookupContainer.Add(serverRow);
-                
-                // Mismatch warning and sync button
-                if (hasMismatch)
+                if (!string.IsNullOrEmpty(editorTeamId) || !string.IsNullOrEmpty(serverTeamId))
                 {
-                    var warningRow = new VisualElement();
-                    warningRow.style.flexDirection = FlexDirection.Row;
-                    warningRow.style.marginTop = 8;
-                    warningRow.style.marginLeft = 10;
-                    warningRow.style.marginBottom = 8;
+                    var teamIdSectionTitle = new Label("Signing Team ID (Apple Team ID):");
+                    teamIdSectionTitle.style.fontSize = 13;
+                    teamIdSectionTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    teamIdSectionTitle.style.color = new Color(0.9f, 0.9f, 0.9f);
+                    teamIdSectionTitle.style.marginTop = 15;
+                    teamIdSectionTitle.style.marginBottom = 8;
+                    lookupContainer.Add(teamIdSectionTitle);
                     
-                    var warningIcon = new Label("⚠️");
-                    warningIcon.style.fontSize = 12;
-                    warningIcon.style.marginRight = 5;
-                    warningRow.Add(warningIcon);
+                    var teamIdRow = new VisualElement();
+                    teamIdRow.style.flexDirection = FlexDirection.Row;
+                    teamIdRow.style.marginBottom = 6;
+                    teamIdRow.style.marginLeft = 10;
                     
-                    var warningText = new Label($"Mismatch detected! Build uses Editor value. ");
-                    warningText.style.fontSize = 11;
-                    warningText.style.color = new Color(1f, 0.8f, 0.4f);
-                    warningRow.Add(warningText);
+                    var teamIdLabel = new Label("Signing Team ID:");
+                    teamIdLabel.style.minWidth = 140;
+                    teamIdLabel.style.fontSize = 11;
+                    teamIdLabel.style.color = new Color(0.7f, 0.7f, 0.7f);
+                    teamIdRow.Add(teamIdLabel);
                     
-                    // Use Server button
-                    var syncButton = new Button(() => {
-                        #if UNITY_IOS
-                        try
+                    string displayTeamId = !string.IsNullOrEmpty(editorTeamId) ? editorTeamId : serverTeamId;
+                    var teamIdValue = new Label(displayTeamId);
+                    teamIdValue.style.fontSize = 11;
+                    teamIdValue.style.color = new Color(0.8f, 1f, 0.8f);
+                    teamIdValue.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    teamIdRow.Add(teamIdValue);
+                    
+                    lookupContainer.Add(teamIdRow);
+                    
+                    if (hasServerData)
+                    {
+                        bool hasMismatch = HasAppleTeamIdMismatch(editorTeamId, serverTeamId);
+                        if (hasMismatch)
                         {
-                            PlayerSettings.iOS.appleDeveloperTeamID = serverTeamId;
-                            iosTeamId = serverTeamId; // Update local cache
-                            Debug.Log($"[BoostOps] ✅ Synced Apple Team ID from server: {serverTeamId}");
+                            var warningRow = new VisualElement();
+                            warningRow.style.flexDirection = FlexDirection.Row;
+                            warningRow.style.marginTop = 8;
+                            warningRow.style.marginLeft = 10;
+                            warningRow.style.marginBottom = 8;
                             
-                            // Refresh UI to show updated values
-                            EditorApplication.delayCall += RefreshAllUI;
+                            var warningIcon = new Label("⚠️");
+                            warningIcon.style.fontSize = 12;
+                            warningIcon.style.marginRight = 5;
+                            warningRow.Add(warningIcon);
+                            
+                            var warningText = new Label($"Server has different Team ID: {serverTeamId}");
+                            warningText.style.fontSize = 11;
+                            warningText.style.color = new Color(1f, 0.8f, 0.4f);
+                            warningRow.Add(warningText);
+                            
+                            var syncButton = new Button(() => {
+                                #if UNITY_IOS
+                                try
+                                {
+                                    PlayerSettings.iOS.appleDeveloperTeamID = serverTeamId;
+                                    iosTeamId = serverTeamId;
+                                    Debug.Log($"[BoostOps] ✅ Synced Apple Team ID from server: {serverTeamId}");
+                                    EditorApplication.delayCall += RefreshAllUI;
+                                }
+                                catch (System.Exception ex)
+                                {
+                                    Debug.LogError($"[BoostOps] ❌ Failed to sync Apple Team ID: {ex.Message}");
+                                    EditorUtility.DisplayDialog("Sync Failed", $"Failed to sync Apple Team ID: {ex.Message}", "OK");
+                                }
+                                #endif
+                            });
+                            syncButton.text = "Use Server";
+                            syncButton.style.fontSize = 10;
+                            syncButton.style.height = 20;
+                            syncButton.style.marginLeft = 5;
+                            syncButton.style.backgroundColor = new Color(0.2f, 0.6f, 0.9f);
+                            warningRow.Add(syncButton);
+                            
+                            lookupContainer.Add(warningRow);
                         }
-                        catch (System.Exception ex)
-                        {
-                            Debug.LogError($"[BoostOps] ❌ Failed to sync Apple Team ID: {ex.Message}");
-                            EditorUtility.DisplayDialog("Sync Failed", $"Failed to sync Apple Team ID: {ex.Message}", "OK");
-                        }
-                        #endif
-                    });
-                    syncButton.text = "Use Server";
-                    syncButton.style.fontSize = 10;
-                    syncButton.style.height = 20;
-                    syncButton.style.marginLeft = 5;
-                    syncButton.style.backgroundColor = new Color(0.2f, 0.6f, 0.9f);
-                    warningRow.Add(syncButton);
-                    
-                    lookupContainer.Add(warningRow);
-                }
-                else if (string.IsNullOrEmpty(editorTeamId) && !string.IsNullOrEmpty(serverTeamId))
-                {
-                    // Show helpful note about auto-sync
-                    var syncNoteRow = new VisualElement();
-                    syncNoteRow.style.flexDirection = FlexDirection.Row;
-                    syncNoteRow.style.marginTop = 6;
-                    syncNoteRow.style.marginLeft = 10;
-                    syncNoteRow.style.marginBottom = 8;
-                    
-                    var syncNote = new Label("💡 Editor field will be auto-populated on next project fetch");
-                    syncNote.style.fontSize = 11;
-                    syncNote.style.color = new Color(0.7f, 0.9f, 1f);
-                    syncNote.style.unityFontStyleAndWeight = FontStyle.Italic;
-                    syncNoteRow.Add(syncNote);
-                    
-                    lookupContainer.Add(syncNoteRow);
+                    }
                 }
             }
             
@@ -4453,123 +4387,9 @@ namespace BoostOps.Editor
                 lookupContainer.Add(messageRow);
             }
             
-            contentContainer.Add(lookupContainer);
+            parent.Add(lookupContainer);
         }
         
-        void BuildManagedLinksConfigured()
-        {
-            var mainContainer = new VisualElement();
-            mainContainer.style.flexDirection = FlexDirection.Row;
-            mainContainer.style.marginTop = 25;
-            mainContainer.style.marginBottom = 10;
-            
-            // Left side - Read-only configuration display
-            var configContainer = new VisualElement();
-            configContainer.style.flexDirection = FlexDirection.Column;
-            configContainer.style.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 0.3f);
-            configContainer.style.paddingLeft = 15;
-            configContainer.style.paddingRight = 15;
-            configContainer.style.paddingTop = 15;
-            configContainer.style.paddingBottom = 15;
-            configContainer.style.borderTopLeftRadius = 4;
-            configContainer.style.borderTopRightRadius = 4;
-            configContainer.style.borderBottomLeftRadius = 4;
-            configContainer.style.borderBottomRightRadius = 4;
-            configContainer.style.width = Length.Percent(50);
-            configContainer.style.flexShrink = 0;
-            configContainer.style.marginRight = 5;
-            
-            var configTitle = new Label("🔗 Managed Configuration");
-            configTitle.style.fontSize = 16;
-            configTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
-            configTitle.style.marginBottom = 15;
-            configContainer.Add(configTitle);
-            
-            // Project slug display (read-only)
-            var slugRow = new VisualElement();
-            slugRow.style.flexDirection = FlexDirection.Row;
-            slugRow.style.alignItems = Align.Center;
-            slugRow.style.marginBottom = 10;
-            
-            var slugLabel = new Label("Project Domain:");
-            slugLabel.style.minWidth = 120;
-            slugLabel.style.fontSize = 12;
-            slugRow.Add(slugLabel);
-            
-            var slugValue = new Label($"{registeredProjectSlug}.boostlink.me");
-            slugValue.style.fontSize = 12;
-            slugValue.style.color = new Color(0.2f, 0.8f, 0.2f);
-            slugValue.style.unityFontStyleAndWeight = FontStyle.Bold;
-            slugRow.Add(slugValue);
-            
-            configContainer.Add(slugRow);
-            
-            // Status display
-            var statusRow = new VisualElement();
-            statusRow.style.flexDirection = FlexDirection.Row;
-            statusRow.style.alignItems = Align.Center;
-            statusRow.style.marginBottom = 10;
-            
-            var statusLabel = new Label("Status:");
-            statusLabel.style.minWidth = 120;
-            statusLabel.style.fontSize = 12;
-            statusRow.Add(statusLabel);
-            
-            var statusValue = new Label("✅ Active & Configured");
-            statusValue.style.fontSize = 12;
-            statusValue.style.color = new Color(0.2f, 0.8f, 0.2f);
-            statusRow.Add(statusValue);
-            
-            configContainer.Add(statusRow);
-            
-            // Usage meter
-            var usageRow = new VisualElement();
-            usageRow.style.flexDirection = FlexDirection.Row;
-            usageRow.style.alignItems = Align.Center;
-            usageRow.style.marginBottom = 15;
-            
-            var usageLabel = new Label("Usage:");
-            usageLabel.style.minWidth = 120;
-            usageLabel.style.fontSize = 12;
-            usageRow.Add(usageLabel);
-            
-            var usageValue = new Label("0 / 1000 clicks this month");
-            usageValue.style.fontSize = 12;
-            usageValue.style.color = new Color(0.8f, 0.8f, 0.8f);
-            usageRow.Add(usageValue);
-            
-            configContainer.Add(usageRow);
-            
-            // Dashboard link
-            var dashboardButton = new Button(() => OpenDashboard("links")) { text = "✏️ Edit on Dashboard" };
-            dashboardButton.style.height = 32;
-            dashboardButton.style.fontSize = 12;
-            dashboardButton.style.backgroundColor = new Color(0.2f, 0.5f, 0.8f, 1f);
-            configContainer.Add(dashboardButton);
-            
-            mainContainer.Add(configContainer);
-            
-            // Right side - QR Code Testing (same as before)
-            var rightContainer = new VisualElement();
-            rightContainer.style.flexDirection = FlexDirection.Column;
-            rightContainer.style.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 0.3f);
-            rightContainer.style.paddingLeft = 15;
-            rightContainer.style.paddingRight = 15;
-            rightContainer.style.paddingTop = 15;
-            rightContainer.style.paddingBottom = 15;
-            rightContainer.style.borderTopLeftRadius = 4;
-            rightContainer.style.borderTopRightRadius = 4;
-            rightContainer.style.borderBottomLeftRadius = 4;
-            rightContainer.style.borderBottomRightRadius = 4;
-            rightContainer.style.width = Length.Percent(50);
-            rightContainer.style.flexShrink = 0;
-            rightContainer.style.marginLeft = 5;
-            
-            BuildQRCodeTestingContent(rightContainer);
-            
-            mainContainer.Add(rightContainer);
-            contentContainer.Add(mainContainer);
-        }
         
         void BuildDomainAndUsageContent(VisualElement parent)
         {
@@ -5972,9 +5792,20 @@ namespace BoostOps.Editor
             
             qrUrlLabel = new Label();
             qrUrlLabel.style.fontSize = 14;
-            qrUrlLabel.style.color = new Color(0.4f, 0.8f, 1f, 1f); // Bright blue for URL
+            qrUrlLabel.style.color = new Color(0.4f, 0.8f, 1f, 1f);
             qrUrlLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
             qrUrlLabel.style.whiteSpace = WhiteSpace.Normal;
+            qrUrlLabel.AddManipulator(new Clickable(() => {})); // enables pointer cursor on hover
+            qrUrlLabel.RegisterCallback<MouseDownEvent>(evt => {
+                if (!string.IsNullOrEmpty(qrUrlLabel.text))
+                    Application.OpenURL(qrUrlLabel.text);
+            });
+            qrUrlLabel.RegisterCallback<MouseOverEvent>(evt => {
+                qrUrlLabel.style.color = new Color(0.6f, 0.9f, 1f, 1f);
+            });
+            qrUrlLabel.RegisterCallback<MouseOutEvent>(evt => {
+                qrUrlLabel.style.color = new Color(0.4f, 0.8f, 1f, 1f);
+            });
             urlContainer.Add(qrUrlLabel);
             
             parent.Add(urlContainer);
@@ -6279,6 +6110,32 @@ namespace BoostOps.Editor
             if (!isLoggedIn)
             {
                 return; // Don't show the project-specific sections if not logged in
+            }
+
+            // Account mismatch warning
+            if (lookupUsedLocalFallback && lookupProjectFound)
+            {
+                var warningCard = new VisualElement();
+                warningCard.style.backgroundColor = new Color(0.6f, 0.4f, 0.1f, 0.4f);
+                warningCard.style.paddingLeft = 15;
+                warningCard.style.paddingRight = 15;
+                warningCard.style.paddingTop = 12;
+                warningCard.style.paddingBottom = 12;
+                warningCard.style.marginBottom = 15;
+                warningCard.style.borderTopLeftRadius = 6;
+                warningCard.style.borderTopRightRadius = 6;
+                warningCard.style.borderBottomLeftRadius = 6;
+                warningCard.style.borderBottomRightRadius = 6;
+                warningCard.style.borderLeftWidth = 3;
+                warningCard.style.borderLeftColor = new Color(1f, 0.7f, 0.2f, 1f);
+
+                var warningLabel = new Label($"⚠️ The BoostOps server could not find this project for the currently logged-in account ({userEmail ?? "unknown"}). Showing cached local data. You may be signed into the wrong account.");
+                warningLabel.style.fontSize = 12;
+                warningLabel.style.color = new Color(1f, 0.9f, 0.6f);
+                warningLabel.style.whiteSpace = WhiteSpace.Normal;
+                warningCard.Add(warningLabel);
+
+                contentContainer.Add(warningCard);
             }
 
             // PRIORITY 1: Critical Issues (Registration & Platform Setup)
@@ -12239,6 +12096,80 @@ namespace BoostOps.Editor
         }
         
         /// <summary>
+        /// Single shared method for making the project lookup API call.
+        /// Both CheckForExistingProject and CheckForExistingProjectWithoutUIRebuild delegate here
+        /// so the request is always identical and can never drift out of sync.
+        /// </summary>
+        private async Task<(string responseText, bool isSuccess, int statusCode)> PerformProjectLookupRequest()
+        {
+            projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
+            
+            string projectName = Application.productName;
+            string productGuid = PlayerSettings.productGUID.ToString();
+            string cloudProjectId = Application.cloudProjectId;
+            #if UNITY_2021_2_OR_NEWER
+            string iosBundleId = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.iOS);
+            string androidPackageName = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android);
+            #else
+            string iosBundleId = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.iOS);
+            string androidPackageName = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
+            #endif
+            
+            if (string.IsNullOrEmpty(iosBundleId) && string.IsNullOrEmpty(androidPackageName) && string.IsNullOrEmpty(productGuid))
+            {
+                Debug.LogWarning("[BoostOps] ⚠️ No bundle ID, package name, or product GUID configured. Cannot lookup existing projects.");
+                return (null, false, 0);
+            }
+            
+            var settings = projectSettings;
+            string requestAppleStoreId = settings?.appleAppStoreId;
+            string requestAndroidSha256 = settings?.androidCertFingerprint;
+            string projectKey = settings?.projectKey;
+            string projectSlug = settings?.projectSlug;
+            string projectId = settings?.projectId;
+            string appleTeamId = null;
+            #if UNITY_IOS
+            try { appleTeamId = PlayerSettings.iOS.appleDeveloperTeamID; } catch { }
+            #endif
+            
+            string baseUrl = GetApiServerBaseUrl();
+            string endpoint = $"{baseUrl}/api/unity/project/lookup";
+            
+            var jsonParts = new List<string>();
+            string EscapeJson(string value) => value?.Replace("\\", "\\\\").Replace("\"", "\\\"") ?? "";
+            
+            jsonParts.Add($"\"jwtToken\":\"{EscapeJson(apiToken)}\"");
+            jsonParts.Add($"\"projectName\":\"{EscapeJson(projectName)}\"");
+            if (!string.IsNullOrEmpty(projectKey)) jsonParts.Add($"\"projectKey\":\"{EscapeJson(projectKey)}\"");
+            if (!string.IsNullOrEmpty(projectSlug)) jsonParts.Add($"\"projectSlug\":\"{EscapeJson(projectSlug)}\"");
+            if (!string.IsNullOrEmpty(projectId)) jsonParts.Add($"\"projectId\":\"{EscapeJson(projectId)}\"");
+            if (!string.IsNullOrEmpty(productGuid)) jsonParts.Add($"\"productGuid\":\"{EscapeJson(productGuid)}\"");
+            if (!string.IsNullOrEmpty(cloudProjectId)) jsonParts.Add($"\"cloudProjectId\":\"{EscapeJson(cloudProjectId)}\"");
+            if (!string.IsNullOrEmpty(iosBundleId)) jsonParts.Add($"\"iosBundleId\":\"{EscapeJson(iosBundleId)}\"");
+            if (!string.IsNullOrEmpty(androidPackageName)) jsonParts.Add($"\"androidPackageName\":\"{EscapeJson(androidPackageName)}\"");
+            if (!string.IsNullOrEmpty(requestAppleStoreId)) jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(requestAppleStoreId)}\"");
+            if (!string.IsNullOrEmpty(appleTeamId)) jsonParts.Add($"\"appleTeamId\":\"{EscapeJson(appleTeamId)}\"");
+            if (!string.IsNullOrEmpty(requestAndroidSha256)) jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(requestAndroidSha256)}\"]");
+            
+            string jsonData = "{" + string.Join(",", jsonParts) + "}";
+            Debug.Log($"[BoostOps] 📤 Project lookup request: {jsonData}");
+            Debug.Log($"[BoostOps] 🚀 Making HTTP POST to: {endpoint}");
+            
+            using (var client = new HttpClient())
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+            {
+                var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
+                var response = await client.PostAsync(endpoint, content, cts.Token);
+                string responseText = await response.Content.ReadAsStringAsync();
+                
+                Debug.Log($"[BoostOps] 📨 Project lookup response status: {response.StatusCode} ({(int)response.StatusCode})");
+                Debug.Log($"[BoostOps] 📝 Project lookup response body: {responseText}");
+                
+                return (responseText, response.IsSuccessStatusCode, (int)response.StatusCode);
+            }
+        }
+        
+        /// <summary>
         /// Check for existing BoostOps projects without rebuilding UI (for fetch operations)
         /// Returns the standard ProjectLookupResponse and updates cachedProjectLookupResponse
         /// </summary>
@@ -12258,88 +12189,25 @@ namespace BoostOps.Editor
             {
                 Debug.Log("[BoostOps] 🔍 Fetching project configuration from server...");
                 
-                // Ensure project settings asset exists
-                projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
+                var (responseText, isSuccess, statusCode) = await PerformProjectLookupRequest();
                 
-                // Get bundle ID and package name for lookup
-                #if UNITY_2021_2_OR_NEWER
-                string bundleId = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.iOS);
-                string packageName = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android);
-                #else
-                string bundleId = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.iOS);
-                string packageName = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
-                #endif
-                
-                if (string.IsNullOrEmpty(bundleId) && string.IsNullOrEmpty(packageName))
-                {
-                    Debug.LogWarning("[BoostOps] ⚠️ No bundle ID or package name configured - cannot lookup existing project");
+                if (responseText == null)
                     return null;
-                }
                 
-                // Use direct HTTP request with all identifiers (same as CheckForExistingProject)
-                // This ensures we match projects by bundle ID, not just Unity project GUID
-                string projectName = Application.productName;
-                string productGuid = PlayerSettings.productGUID.ToString();
-                string cloudProjectId = Application.cloudProjectId;
-                #if UNITY_2021_2_OR_NEWER
-                string iosBundleId = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.iOS);
-                string androidPackageName = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android);
-                #else
-                string iosBundleId = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.iOS);
-                string androidPackageName = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
-                #endif
-                
-                var settings = BoostOpsProjectSettings.GetOrCreateSettings();
-                string requestAppleStoreId = settings?.appleAppStoreId;
-                string requestAndroidSha256 = settings?.androidCertFingerprint;
-                string appleTeamId = null;
-                #if UNITY_IOS
-                try { appleTeamId = PlayerSettings.iOS.appleDeveloperTeamID; } catch { }
-                #endif
-                
-                string baseUrl = GetApiServerBaseUrl();
-                string endpoint = $"{baseUrl}/api/unity/project/lookup";
-                
-                // Create JSON with all identifiers
-                var jsonParts = new List<string>();
-                string EscapeJson(string value) => value?.Replace("\\", "\\\\").Replace("\"", "\\\"") ?? "";
-                
-                jsonParts.Add($"\"jwtToken\":\"{EscapeJson(apiToken)}\"");
-                jsonParts.Add($"\"projectName\":\"{EscapeJson(projectName)}\"");
-                if (!string.IsNullOrEmpty(productGuid)) jsonParts.Add($"\"productGuid\":\"{EscapeJson(productGuid)}\"");
-                if (!string.IsNullOrEmpty(cloudProjectId)) jsonParts.Add($"\"cloudProjectId\":\"{EscapeJson(cloudProjectId)}\"");
-                if (!string.IsNullOrEmpty(iosBundleId)) jsonParts.Add($"\"iosBundleId\":\"{EscapeJson(iosBundleId)}\"");
-                if (!string.IsNullOrEmpty(androidPackageName)) jsonParts.Add($"\"androidPackageName\":\"{EscapeJson(androidPackageName)}\"");
-                if (!string.IsNullOrEmpty(requestAppleStoreId)) jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(requestAppleStoreId)}\"");
-                if (!string.IsNullOrEmpty(appleTeamId)) jsonParts.Add($"\"appleTeamId\":\"{EscapeJson(appleTeamId)}\"");
-                if (!string.IsNullOrEmpty(requestAndroidSha256)) jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(requestAndroidSha256)}\"]");
-                
-                string jsonData = "{" + string.Join(",", jsonParts) + "}";
-                
-                using (var client = new HttpClient())
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+                if (isSuccess)
                 {
-                    var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
-                    var response = await client.PostAsync(endpoint, content, cts.Token);
-                    string responseText = await response.Content.ReadAsStringAsync();
+                    Debug.Log($"[BoostOps] 📥 Server Response:\n{responseText}");
                     
-                    if (response.IsSuccessStatusCode)
+                    lookupResponse = JsonUtility.FromJson<WaspProjectLookupResponse>(responseText);
+                    if (lookupResponse != null)
                     {
-                        // Log raw response for debugging
-                        Debug.Log($"[BoostOps] 📥 Server Response:\n{responseText}");
-                        
-                        lookupResponse = JsonUtility.FromJson<WaspProjectLookupResponse>(responseText);
-                        // Save raw response so LoadCampaignsFromAPI can extract boostops_config
-                        if (lookupResponse != null)
-                        {
-                            lookupResponse.rawResponse = responseText;
-                        }
+                        lookupResponse.rawResponse = responseText;
                     }
-                    else
-                    {
-                        Debug.LogError($"[BoostOps] ❌ API request failed ({response.StatusCode}):\n{responseText}");
-                        lookupResponse = null;
-                    }
+                }
+                else
+                {
+                    Debug.LogError($"[BoostOps] ❌ API request failed ({statusCode}):\n{responseText}");
+                    lookupResponse = null;
                 }
                 if (lookupResponse != null && lookupResponse.found && lookupResponse.project != null)
                 {
@@ -12352,9 +12220,9 @@ namespace BoostOps.Editor
                         try
                         {
                             var config = JsonUtility.FromJson<WaspBoostOpsConfig>(lookupResponse.boostops_config);
-                            if (config.source_project != null)
+                            if (config.source_project != null && 
+                                (!string.IsNullOrEmpty(config.source_project.name) || !string.IsNullOrEmpty(config.source_project.bundle_id) || config.source_project.min_sessions > 0))
                             {
-                    // Convert from WaspSourceProject to local SourceProject class
                     cachedSourceProject = new SourceProject();
                     cachedSourceProject.name = config.source_project.name;
                     cachedSourceProject.bundle_id = config.source_project.bundle_id;
@@ -12625,125 +12493,23 @@ namespace BoostOps.Editor
             {
                 Debug.Log("[BoostOps] 🔍 Looking up project configuration...");
                 
-                // Declare projectKey at method level to avoid scope conflicts
                 string projectKey = null;
-                
-                // Ensure project settings asset exists
                 projectSettings = BoostOpsProjectSettings.GetOrCreateSettings();
                 
-                // Verify the asset was created properly
                 string assetPath = AssetDatabase.GetAssetPath(projectSettings);
                 if (string.IsNullOrEmpty(assetPath))
                 {
                     Debug.LogWarning("[BoostOps] ⚠️ Project settings asset could not be created - continuing with temporary instance");
                 }
                 
-                // Gather Unity project information
-                string projectName = Application.productName;
-                string productGuid = PlayerSettings.productGUID.ToString(); // Unity project GUID (stable, preferred)
-                string cloudProjectId = Application.cloudProjectId;
-                #if UNITY_2021_2_OR_NEWER
-                string iosBundleId = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.iOS);
-                string androidPackageName = PlayerSettings.GetApplicationIdentifier(UnityEditor.Build.NamedBuildTarget.Android);
-                #else
-                string iosBundleId = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.iOS);
-                string androidPackageName = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
-                #endif
+                var (responseText, isSuccess, statusCode) = await PerformProjectLookupRequest();
                 
-                // Get additional platform-specific data from the now-guaranteed asset
-                // NOTE: Use distinct local names to avoid shadowing instance fields
-                // (iosAppStoreId, androidCertFingerprint) which are updated later by async code.
-                var settings = projectSettings;
-                string requestAppleStoreId = settings?.appleAppStoreId;
-                string requestAndroidSha256 = settings?.androidCertFingerprint;
-                
-                // Try to get Apple Team ID from iOS player settings (if available)
-                string appleTeamId = null;
-                #if UNITY_IOS
-                try
-                {
-                    appleTeamId = PlayerSettings.iOS.appleDeveloperTeamID;
-                }
-                catch (System.Exception)
-                {
-                    // iOS settings not available or not configured
-                }
-                #endif
-                
-                Debug.Log($"[BoostOps] Project Name: {projectName ?? "not set"}");
-                Debug.Log($"[BoostOps] Product GUID: {productGuid ?? "not set"}");
-                Debug.Log($"[BoostOps] Cloud Project ID: {cloudProjectId ?? "not set"}");
-                Debug.Log($"[BoostOps] iOS Bundle ID: {iosBundleId ?? "not set"}");
-                Debug.Log($"[BoostOps] Android Package Name: {androidPackageName ?? "not set"}");
-                Debug.Log($"[BoostOps] Apple App Store ID: {requestAppleStoreId ?? "not set"}");
-                Debug.Log($"[BoostOps] Apple Team ID: {appleTeamId ?? "not set"}");
-                Debug.Log($"[BoostOps] Android SHA256: {(string.IsNullOrEmpty(requestAndroidSha256) ? "not set" : "configured")}");
-                
-                if (string.IsNullOrEmpty(iosBundleId) && string.IsNullOrEmpty(androidPackageName) && string.IsNullOrEmpty(productGuid))
-                {
-                    Debug.LogWarning("[BoostOps] ⚠️ No bundle ID, package name, or product GUID configured. Cannot lookup existing projects.");
+                if (responseText == null)
                     return;
-                }
                 
-                string baseUrl = GetApiServerBaseUrl();
-                string endpoint = $"{baseUrl}/api/unity/project/lookup";
-                
-                Debug.Log($"[BoostOps] 🌐 Project lookup endpoint: {endpoint}");
-                Debug.Log($"[BoostOps] 📡 API Base URL: {baseUrl}");
-                
-                // Create JSON manually to avoid sending empty fields
-                var jsonParts = new List<string>();
-                
-                // Helper method to escape JSON strings
-                string EscapeJson(string value) => value?.Replace("\\", "\\\\").Replace("\"", "\\\"") ?? "";
-                
-                // Required fields
-                jsonParts.Add($"\"jwtToken\":\"{EscapeJson(apiToken)}\"");
-                jsonParts.Add($"\"projectName\":\"{EscapeJson(projectName)}\"");
-                
-                // Add optional parameters only if they have values
-                if (!string.IsNullOrEmpty(productGuid))
-                    jsonParts.Add($"\"productGuid\":\"{EscapeJson(productGuid)}\"");
-                
-                if (!string.IsNullOrEmpty(cloudProjectId))
-                    jsonParts.Add($"\"cloudProjectId\":\"{EscapeJson(cloudProjectId)}\"");
-                
-                // Use preferred parameter names (not duplicates)
-                if (!string.IsNullOrEmpty(iosBundleId))
-                    jsonParts.Add($"\"iosBundleId\":\"{EscapeJson(iosBundleId)}\"");
-                
-                if (!string.IsNullOrEmpty(androidPackageName))
-                    jsonParts.Add($"\"androidPackageName\":\"{EscapeJson(androidPackageName)}\"");
-                
-                if (!string.IsNullOrEmpty(requestAppleStoreId))
-                    jsonParts.Add($"\"iosAppStoreId\":\"{EscapeJson(requestAppleStoreId)}\"");
-                
-                if (!string.IsNullOrEmpty(appleTeamId))
-                    jsonParts.Add($"\"appleTeamId\":\"{EscapeJson(appleTeamId)}\"");
-                
-                if (!string.IsNullOrEmpty(requestAndroidSha256))
-                    jsonParts.Add($"\"androidSha256Fingerprints\":[\"{EscapeJson(requestAndroidSha256)}\"]");
-                
-                string jsonData = "{" + string.Join(",", jsonParts) + "}";
-                Debug.Log($"[BoostOps] 📤 Project lookup request: {jsonData}");
-                Debug.Log($"[BoostOps] 🚀 Making HTTP POST request to: {endpoint}");
-                
-                using (var client = new HttpClient())
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15))) // Longer timeout + cancellation token
                 {
-                    var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
-                    Debug.Log($"[BoostOps] 📡 Sending POST request to project lookup endpoint...");
-                    
-                    var response = await client.PostAsync(endpoint, content, cts.Token);
-                    string responseText = await response.Content.ReadAsStringAsync();
-                    
-                    Debug.Log($"[BoostOps] 📨 Project lookup response status: {response.StatusCode} ({(int)response.StatusCode})");
-                    Debug.Log($"[BoostOps] 📄 Project lookup response headers: {response.Headers}");
-                    Debug.Log($"[BoostOps] 📝 Project lookup response body: {responseText}");
-                    
-                    if (response.IsSuccessStatusCode)
+                    if (isSuccess)
                     {
-                        // Parse the response to see if a project was found
                         var lookupResponse = JsonUtility.FromJson<ProjectLookupResponse>(responseText);
                         
                         if (lookupResponse != null && lookupResponse.found)
@@ -12754,6 +12520,7 @@ namespace BoostOps.Editor
                             // Store lookup response data for UI display
                             hasLookupResponse = true;
                             lookupProjectFound = true;
+                            lookupUsedLocalFallback = false;
                             lookupProjectSlug = GetProjectSlug(lookupResponse) ?? "";
                             lookupProjectName = lookupResponse.project?.name ?? "";
                             lookupMessage = lookupResponse.message ?? "Project found";
@@ -13038,6 +12805,11 @@ namespace BoostOps.Editor
                                 studioId = lookupResponse.project.studio.id;
                                 studioName = lookupResponse.project.studio.name;
                                 studioDescription = lookupResponse.project.studio.description ?? "";
+                                if (lookupResponse.project.studio.tier != null && !string.IsNullOrEmpty(lookupResponse.project.studio.tier.name))
+                                {
+                                    studioTierName = lookupResponse.project.studio.tier.name;
+                                    Debug.Log($"[BoostOps] 📋 Studio tier: {studioTierName}");
+                                }
                                 
                                 // Save studio information to EditorPrefs for persistence
                                 SaveStudioInfo();
@@ -13352,30 +13124,65 @@ namespace BoostOps.Editor
                         }
                         else
                         {
-                            Debug.Log("[BoostOps] ℹ️ No existing project found for this app. Registration will be needed.");
+                            Debug.Log("[BoostOps] ℹ️ No existing project found for this app via API.");
                             
-                            // Store lookup response data for UI display
-                            hasLookupResponse = true;
-                            lookupProjectFound = false;
-                            lookupProjectSlug = "";
-                            lookupProjectName = "";
-                            lookupMessage = lookupResponse?.message ?? "No project found";
-                            cachedProjectLookupResponse = null; // Clear cache when no project found
+                            var localSettings = BoostOpsProjectSettings.GetInstance();
+                            bool hasLocalProjectKey = localSettings != null && !string.IsNullOrEmpty(localSettings.projectKey);
+                            
+                            if (hasLocalProjectKey)
+                            {
+                                Debug.Log("[BoostOps] ⚠️ API returned 'not found' but local project key exists - possible account mismatch");
+                                hasLookupResponse = true;
+                                lookupProjectFound = true;
+                                lookupUsedLocalFallback = true;
+                                lookupProjectSlug = localSettings.projectSlug ?? "";
+                                lookupProjectName = Application.productName;
+                                lookupMessage = "Project found (from local settings)";
+                                if (string.IsNullOrEmpty(registeredProjectSlug) && !string.IsNullOrEmpty(localSettings.projectSlug))
+                                {
+                                    registeredProjectSlug = localSettings.projectSlug;
+                                }
+                            }
+                            else
+                            {
+                                hasLookupResponse = true;
+                                lookupProjectFound = false;
+                                lookupProjectSlug = "";
+                                lookupProjectName = "";
+                                lookupMessage = lookupResponse?.message ?? "No project found";
+                                cachedProjectLookupResponse = null;
+                            }
                         }
                     }
                     else
                     {
-                        Debug.LogWarning($"[BoostOps] ⚠️ Project lookup failed: {response.StatusCode} - {responseText}");
+                        Debug.LogWarning($"[BoostOps] ⚠️ Project lookup failed: {statusCode} - {responseText}");
                         
-                        // Store lookup failure for UI display
-                        hasLookupResponse = true;
-                        lookupProjectFound = false;
-                        lookupProjectSlug = "";
-                        lookupProjectName = "";
-                        lookupMessage = $"Lookup failed: {response.StatusCode}";
-                        cachedProjectLookupResponse = null; // Clear cache on lookup failure
+                        var failSettings = BoostOpsProjectSettings.GetInstance();
+                        bool hasLocalKey = failSettings != null && !string.IsNullOrEmpty(failSettings.projectKey);
                         
-                        // Don't throw an error - just continue with normal registration flow
+                        if (hasLocalKey)
+                        {
+                            Debug.Log("[BoostOps] ℹ️ API lookup failed but local project settings exist - using cached data");
+                            hasLookupResponse = true;
+                            lookupProjectFound = true;
+                            lookupProjectSlug = failSettings.projectSlug ?? "";
+                            lookupProjectName = Application.productName;
+                            lookupMessage = "Project found (from local settings)";
+                            if (string.IsNullOrEmpty(registeredProjectSlug) && !string.IsNullOrEmpty(failSettings.projectSlug))
+                            {
+                                registeredProjectSlug = failSettings.projectSlug;
+                            }
+                        }
+                        else
+                        {
+                            hasLookupResponse = true;
+                            lookupProjectFound = false;
+                            lookupProjectSlug = "";
+                            lookupProjectName = "";
+                            lookupMessage = $"Lookup failed: {statusCode}";
+                            cachedProjectLookupResponse = null;
+                        }
                     }
                 }
             }
@@ -13615,8 +13422,8 @@ namespace BoostOps.Editor
                 Debug.LogWarning($"[BoostOps] Could not fetch SDK key: {ex.Message}");
             }
             
-            // Refresh UI
-            Repaint();
+            // Full UI rebuild to update header bar with new account
+            RefreshGlobalStatusBar();
         }
         
         /// <summary>
@@ -14622,10 +14429,9 @@ For advanced multi-domain scenarios (white-label, re-branding), refer to the Boo
                 {
                     EditorGUILayout.LabelField("💡 Love this? Get cloud hosting, analytics & cross-promotion for $0/month with 1000 free clicks", EditorStyles.miniLabel);
                     
-                    if (GUILayout.Button("Try Cloud Features →", EditorStyles.linkLabel, GUILayout.Width(160)))
+                    if (GUILayout.Button("Open Dashboard →", EditorStyles.linkLabel, GUILayout.Width(160)))
                     {
-                        hostingOption = HostingOption.Cloud; // Switch to cloud mode
-                        SaveHostingOption();
+                        Application.OpenURL("https://app.boostops.io");
                     }
                 }
                 GUI.backgroundColor = originalColor;
@@ -16960,6 +16766,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
         studioId = EditorPrefs.GetString("BoostOps_StudioId", "");
         studioName = EditorPrefs.GetString("BoostOps_StudioName", "");
         studioDescription = EditorPrefs.GetString("BoostOps_StudioDescription", "");
+        studioTierName = EditorPrefs.GetString("BoostOps_StudioTierName", "Free");
         isStudioOwner = EditorPrefs.GetBool("BoostOps_IsStudioOwner", false);
     }
     
@@ -16968,6 +16775,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
         EditorPrefs.SetString("BoostOps_StudioId", studioId);
         EditorPrefs.SetString("BoostOps_StudioName", studioName);
         EditorPrefs.SetString("BoostOps_StudioDescription", studioDescription);
+        EditorPrefs.SetString("BoostOps_StudioTierName", studioTierName);
         EditorPrefs.SetBool("BoostOps_IsStudioOwner", isStudioOwner);
     }
     
@@ -19090,13 +18898,22 @@ https://developer.android.com/training/app-links/verify-site-associations";
                 // Cache source project settings from boostops_config
                 if (config.source_project != null)
                 {
+                    bool hasAnyData = !string.IsNullOrEmpty(config.source_project.name) ||
+                                      !string.IsNullOrEmpty(config.source_project.bundle_id) ||
+                                      config.source_project.min_sessions > 0;
+                    
+                    if (!hasAnyData)
+                    {
+                        LogDebug("⚠️ config.source_project exists but has no meaningful data - skipping cachedSourceProject creation");
+                    }
+                    else
+                    {
                     // Convert from BoostOps.Core.SourceProject to our editor SourceProject class
                     cachedSourceProject = new SourceProject();
                     cachedSourceProject.name = config.source_project.name;
                     cachedSourceProject.bundle_id = config.source_project.bundle_id;
                     cachedSourceProject.min_sessions = config.source_project.min_sessions;
                     cachedSourceProject.min_player_days = config.source_project.min_player_days;
-                    // Copy frequency_cap data from server or use defaults
                     if (config.source_project.frequency_cap != null)
                     {
                         cachedSourceProject.frequency_cap = new FrequencyCapJson 
@@ -19114,7 +18931,6 @@ https://developer.android.com/training/app-links/verify-site-associations";
                     cachedSourceProject.interstitial_rich_cta = config.source_project.interstitial_rich_cta;
                     cachedSourceProject.interstitial_rich_text = config.source_project.interstitial_rich_text;
                     
-                    // Convert from wrapper classes to dictionaries for editor use
                     cachedSourceProject.store_ids = new Dictionary<string, string>();
                     cachedSourceProject.store_urls = new Dictionary<string, string>();
                     cachedSourceProject.platform_ids = new Dictionary<string, object>();
@@ -19178,6 +18994,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
                     LogDebug($"✅ Store IDs from source_project: Apple='{apple}', Google='{google}', Amazon='{amazon}', Windows='{windows}', Samsung='{samsung}'");
                     
                     LogDebug($"✅ Cached source project settings: '{cachedSourceProject.name}' (min_sessions: {cachedSourceProject.min_sessions}, frequency_cap: {cachedSourceProject.frequency_cap?.impressions ?? 0})");
+                    } // close hasAnyData else
                 }
                 
                 LogDebug($"🔍 config.campaigns is null: {config.campaigns == null}");
@@ -20247,6 +20064,7 @@ https://developer.android.com/training/app-links/verify-site-associations";
         // Clear lookup response data
         hasLookupResponse = false;
         lookupProjectFound = false;
+        lookupUsedLocalFallback = false;
         lookupProjectSlug = "";
         lookupProjectName = "";
         lookupMessage = "";
