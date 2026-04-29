@@ -18,6 +18,22 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify .unitypackage is present for this tag
+        # If we ever push a v* tag without the matching .unitypackage committed
+        # to Build/AssetStore/, fail fast instead of silently shipping a
+        # release with zero assets. softprops/action-gh-release treats an empty
+        # files glob as success, which is how v1.1.0 went out without a package.
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          EXPECTED="Build/AssetStore/boostops-attribution-sdk-${VERSION}.unitypackage"
+          if [ ! -f "$EXPECTED" ]; then
+            echo "::error::Missing $EXPECTED. The release workflow refuses to publish a tag without its matching .unitypackage."
+            echo "Build/AssetStore directory contents:"
+            ls -la Build/AssetStore || echo "(directory does not exist)"
+            exit 1
+          fi
+          echo "Found release asset: $EXPECTED ($(du -h "$EXPECTED" | cut -f1))"
+
       - name: Extract changelog entry
         id: changelog
         run: |
@@ -58,5 +74,6 @@ jobs:
             }
             ```
           files: |
-            Build/AssetStore/*.unitypackage
+            Build/AssetStore/boostops-attribution-sdk-${{ steps.version.outputs.VERSION }}.unitypackage
+          fail_on_unmatched_files: true
           generate_release_notes: false
