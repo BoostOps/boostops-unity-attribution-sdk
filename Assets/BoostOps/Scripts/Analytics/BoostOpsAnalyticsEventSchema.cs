@@ -647,12 +647,12 @@ namespace BoostOps.Analytics
                     
                 case BoostOpsAnalyticsContract.EventNames.APP_OPEN:
                     return true; // All fields optional for app open (includes installs with first_open=true)
-                    
-                case BoostOpsAnalyticsContract.EventNames.PURCHASE:
-                    return !string.IsNullOrEmpty(eventData?.currency) && 
-                           eventData?.amount_micros.HasValue == true && 
-                           !string.IsNullOrEmpty(eventData?.product_id);
-                           
+
+                // Note: PURCHASE events are not validated here. As of SDK 1.1.0
+                // purchases bypass the generic event log entirely and are
+                // delivered via the dedicated /v1/purchases endpoint with its
+                // own typed validation (see BoostOpsPurchaseClient).
+
                 case BoostOpsAnalyticsContract.EventNames.INSTALL_ATTRIBUTION_UPDATE:
                     // Note: boostops_id is now validated at top-level, not in event data
                     return !string.IsNullOrEmpty(eventData?.attribution_source);

@@ -748,17 +748,23 @@ namespace BoostOps
         
         /// <summary>
         /// Track an in-app purchase.
-        /// 
-        /// The SDK automatically enriches events with:
-        /// - Device/session context
-        /// - Attribution data (campaign, channel)
-        /// - Environment flags (TestFlight, debug, emulator)
-        /// - SKAN conversion value update (iOS)
+        ///
+        /// As of SDK 1.1.0, purchases are delivered via the dedicated
+        /// BoostOps purchase endpoint (POST /v1/purchases) — not the generic
+        /// event log. The endpoint is idempotent on (project_id, store,
+        /// transaction_id) and the SDK persists pending purchases to disk
+        /// so an app kill mid-flight will not lose the revenue event.
+        ///
+        /// The SDK still:
+        ///   - Mirrors the purchase to Unity Analytics and Firebase
+        ///     Analytics (when configured).
+        ///   - Bumps the iOS SKAN conversion value when applicable.
+        ///   - Maintains local first_purchase / purchase_count counters.
         /// </summary>
         /// <param name="amount">Purchase amount in local currency (REQUIRED)</param>
         /// <param name="currency">ISO 4217 currency code: USD, EUR, GBP, JPY, etc. (REQUIRED)</param>
         /// <param name="productId">Product identifier from app store (REQUIRED)</param>
-        /// <param name="transactionId">Store transaction ID (STRONGLY RECOMMENDED) - Required for deduplication.</param>
+        /// <param name="transactionId">Store transaction ID (REQUIRED) - The unique store-issued identifier. Used as the dedup key.</param>
         /// <param name="receipt">Store receipt or purchase token (OPTIONAL) - For server-side validation.</param>
         public static void TrackPurchase(
             decimal amount,
@@ -767,75 +773,204 @@ namespace BoostOps
             string transactionId = null,
             string receipt = null)
         {
-            // Track purchase count and first purchase flag
+            TrackPurchase(new BoostOpsPurchaseInfo
+            {
+                Amount = amount,
+                Currency = currency,
+                ProductId = productId,
+                TransactionId = transactionId,
+                Receipt = receipt
+            });
+        }
+
+        /// <summary>
+        /// Track an in-app purchase with full control over subscription
+        /// metadata, original transaction IDs, sandbox flags, and timestamps.
+        ///
+        /// Use this overload when:
+        ///   - The purchase is a subscription (set IsSubscription / IsTrial).
+        ///   - You have a separate OriginalTransactionId (subscription renewals).
+        ///   - You need to override sandbox detection or timestamps.
+        ///   - You want a stable ClientEventId across retries.
+        /// </summary>
+        public static void TrackPurchase(BoostOpsPurchaseInfo info)
+        {
+            if (info == null)
+            {
+                BoostOpsLogger.LogError("Analytics", "TrackPurchase called with null info");
+                return;
+            }
+
+            // Local first-purchase / purchase-count counters (used for SKAN bump
+            // and third-party mirroring; not sent to the dedicated endpoint).
             bool isFirstPurchase = PlayerPrefs.GetInt("BoostOps_HasMadePurchase", 0) == 0;
             int currentPurchaseCount = PlayerPrefs.GetInt("BoostOps_PurchaseCount", 0);
             int newPurchaseCount = currentPurchaseCount + 1;
-            
-            // Update purchase tracking
+
             if (isFirstPurchase)
             {
                 PlayerPrefs.SetInt("BoostOps_HasMadePurchase", 1);
             }
             PlayerPrefs.SetInt("BoostOps_PurchaseCount", newPurchaseCount);
             PlayerPrefs.Save();
-            
-            if (string.IsNullOrEmpty(transactionId))
+
+            if (string.IsNullOrEmpty(info.TransactionId))
             {
-                BoostOpsLogger.LogWarning("Analytics", $"⚠️ TrackPurchase missing transaction_id for {productId}. Pass the store's transaction/order ID for reliable deduplication.");
+                BoostOpsLogger.LogWarning("Analytics",
+                    $"⚠️ TrackPurchase missing transaction_id for {info.ProductId}. The dedicated purchases endpoint requires it for dedup; the call will be rejected.");
             }
-            
+
 #if BOOSTOPS_DEBUG_LOGGING
-            BoostOpsLogger.LogDebug("Analytics", $"TrackPurchase: {productId} - {amount} {currency}, txnId={transactionId ?? "(none)"}, hasReceipt={!string.IsNullOrEmpty(receipt)}, first_purchase={isFirstPurchase}, purchase_count={newPurchaseCount}");
+            BoostOpsLogger.LogDebug("Analytics",
+                $"TrackPurchase: {info.ProductId} - {info.Amount} {info.Currency}, txnId={info.TransactionId ?? "(none)"}, hasReceipt={!string.IsNullOrEmpty(info.Receipt)}, first_purchase={isFirstPurchase}, purchase_count={newPurchaseCount}");
 #endif
-            
-            var parameters = new Dictionary<string, object>
+
+            // 1) Build and ship the typed purchase request to the dedicated endpoint.
+            var request = BuildPurchaseRequest(info);
+            BoostOps.Analytics.BoostOpsPurchaseClient.Instance.TrackPurchase(request);
+
+            // 2) Mirror to Unity Analytics + Firebase Analytics (third-party
+            //    dashboards still expect a "purchase" event to show up there).
+            var mirrorParams = new Dictionary<string, object>
             {
-                ["amount"] = amount,
-                ["currency"] = currency ?? "USD",
-                ["product_id"] = productId ?? "",
-                ["transaction_id"] = transactionId ?? "",
-                ["receipt"] = receipt ?? "",
+                ["amount"] = info.Amount,
+                ["currency"] = info.Currency ?? "USD",
+                ["product_id"] = info.ProductId ?? "",
+                ["transaction_id"] = info.TransactionId ?? "",
+                ["receipt"] = info.Receipt ?? "",
                 ["quantity"] = 1,
                 ["first_purchase"] = isFirstPurchase,
-                ["purchase_count"] = newPurchaseCount
+                ["purchase_count"] = newPurchaseCount,
+                ["is_subscription"] = info.IsSubscription,
+                ["is_trial"] = info.IsTrial
             };
-            
-            // Send to BoostOps backend (includes all parameters)
-            var boostOpsProvider = AnalyticsProviderFactory.GetProvider<BoostOpsAnalyticsProvider>();
-            boostOpsProvider?.TrackPurchase(EventNames.PURCHASE, parameters);
-            
-            // Send to Unity Analytics and Firebase Analytics with filtered parameters
-            // Remove sensitive device identifiers before sending to third-party analytics
-            var filteredParameters = FilterSensitiveParameters(parameters);
-            
-            // Send to Unity Analytics
+            var filteredMirrorParams = FilterSensitiveParameters(mirrorParams);
+
             var unityProvider = AnalyticsProviderFactory.GetProvider<UnityAnalyticsProvider>();
-            unityProvider?.TrackPurchase(EventNames.PURCHASE, filteredParameters);
-            
-            // Send to Firebase Analytics (forwards to Google Analytics)
+            unityProvider?.TrackPurchase(EventNames.PURCHASE, filteredMirrorParams);
+
             var firebaseProvider = AnalyticsProviderFactory.GetProvider<FirebaseAnalyticsProvider>();
-            firebaseProvider?.TrackPurchase(EventNames.PURCHASE, filteredParameters);
-            
-            // Update SKAN conversion value for iOS attribution
-            #if UNITY_IOS
+            firebaseProvider?.TrackPurchase(EventNames.PURCHASE, filteredMirrorParams);
+
+            // 3) Update SKAN conversion value (iOS attribution).
+#if UNITY_IOS
             if (BoostOpsSKANManager.Instance != null)
             {
-                var eventData = new Dictionary<string, object>
+                var skanEventData = new Dictionary<string, object>
                 {
-                    ["amount"] = amount,
+                    ["amount"] = info.Amount,
                     ["is_first_purchase"] = isFirstPurchase,
                     ["purchase_count"] = newPurchaseCount
                 };
-                
-                BoostOpsSKANManager.Instance.UpdateConversionValueForEvent("purchase", eventData);
+
+                BoostOpsSKANManager.Instance.UpdateConversionValueForEvent("purchase", skanEventData);
             }
-            #endif
-            
+#endif
+
 #if BOOSTOPS_DEBUG_LOGGING
-            BoostOpsLogger.LogDebug("Analytics", $"✅ Purchase tracked: {productId} - {amount} {currency} (txn: {transactionId})");
+            BoostOpsLogger.LogDebug("Analytics",
+                $"✅ Purchase tracked: {info.ProductId} - {info.Amount} {info.Currency} (txn: {info.TransactionId})");
 #endif
         }
+
+        /// <summary>
+        /// Translate the public BoostOpsPurchaseInfo into the wire-shape
+        /// BoostOpsPurchaseRequest that the dedicated endpoint accepts.
+        /// Auto-derives store, sandbox flag, country, and timestamp when the
+        /// caller has not provided them.
+        /// </summary>
+        private static BoostOps.Analytics.BoostOpsPurchaseRequest BuildPurchaseRequest(BoostOpsPurchaseInfo info)
+        {
+            // Store: caller override wins; otherwise infer from runtime platform.
+            string store = !string.IsNullOrEmpty(info.Store)
+                ? info.Store.ToLowerInvariant()
+                : InferStoreFromPlatform();
+
+            // amount_micros: convert local-currency decimal to integer micros.
+            long amountMicros = BoostOps.Analytics.CurrencyMicros.ToMicros(info.Amount);
+            if (amountMicros < 0) amountMicros = 0;
+
+            // Sandbox: caller override wins; otherwise infer from environment.
+            bool isSandbox = info.IsSandboxOverride.HasValue
+                ? info.IsSandboxOverride.Value
+                : InferSandbox();
+
+            // Timestamp: default(DateTime) means "use now".
+            DateTime ts = info.PurchaseTimestamp == default(DateTime)
+                ? DateTime.UtcNow
+                : info.PurchaseTimestamp.ToUniversalTime();
+
+            string clientEventId = !string.IsNullOrEmpty(info.ClientEventId)
+                ? info.ClientEventId
+                : Guid.NewGuid().ToString("N");
+
+            // Build the shared envelope (schema/timestamps/identifiers/routing
+            // flags/consent/context). Same builder the events endpoint uses,
+            // so the two pipelines collect an identical surface area.
+            var common = BoostOps.Analytics.BoostOpsCommonPayloadBuilder.Build(
+                includeInstallTimestamp: false,
+                includeInstallTimeExtras: false);
+
+            return new BoostOps.Analytics.BoostOpsPurchaseRequest
+            {
+                Common                  = common,
+
+                store                   = store,
+                transaction_id          = info.TransactionId,
+                original_transaction_id = string.IsNullOrEmpty(info.OriginalTransactionId) ? info.TransactionId : info.OriginalTransactionId,
+                product_id              = info.ProductId,
+                amount_micros           = amountMicros,
+                currency                = string.IsNullOrEmpty(info.Currency) ? "USD" : info.Currency.ToUpperInvariant(),
+                country                 = string.IsNullOrEmpty(info.Country) ? null : info.Country.ToUpperInvariant(),
+                receipt                 = string.IsNullOrEmpty(info.Receipt) ? null : info.Receipt,
+                receipt_format          = string.IsNullOrEmpty(info.ReceiptFormat) ? null : info.ReceiptFormat.ToLowerInvariant(),
+                is_subscription         = info.IsSubscription,
+                is_trial                = info.IsTrial,
+                is_sandbox              = isSandbox,
+                purchase_timestamp      = ts.ToString("o"),
+                client_event_id         = clientEventId,
+            };
+        }
+
+        private static string InferStoreFromPlatform()
+        {
+#if UNITY_IOS
+            return "app_store";
+#elif UNITY_ANDROID
+            return "google_play";
+#else
+            // Editor and other platforms: best-effort guess. Server will reject
+            // with a clear validation error if the inferred store isn't valid;
+            // the caller can override via BoostOpsPurchaseInfo.Store.
+            switch (Application.platform)
+            {
+                case RuntimePlatform.IPhonePlayer: return "app_store";
+                case RuntimePlatform.Android: return "google_play";
+                case RuntimePlatform.OSXEditor:
+                case RuntimePlatform.WindowsEditor:
+                case RuntimePlatform.LinuxEditor:
+                    // Editor: default to app_store so dev-time tests still produce a valid payload.
+                    return "app_store";
+                default:
+                    return "app_store";
+            }
+#endif
+        }
+
+        private static bool InferSandbox()
+        {
+            try
+            {
+                if (BoostOpsEnvironment.IsEditor()) return true;
+#if UNITY_IOS && !UNITY_EDITOR
+                if (BoostOpsEnvironment.IsTestFlight()) return true;
+#endif
+                if (BoostOpsEnvironment.IsDebugBuild()) return true;
+            }
+            catch { /* environment helpers can throw on unsupported platforms */ }
+            return false;
+        }
+
         
         /// <summary>
         /// [OBSOLETE - NOT USED] Track conversion event for attribution analysis.

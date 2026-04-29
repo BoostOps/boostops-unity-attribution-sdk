@@ -21,69 +21,53 @@ namespace BoostOps.Analytics
         /// <returns>Complete AnalyticsEventData with all available identifiers in proper locations</returns>
         public static AnalyticsEventData CreateEvent(string eventType, bool includeInstallTimeExtras = false, bool includeInstallTimestamp = false)
         {
-            // Get comprehensive identifier payload
+            // The common envelope (schema/timestamps/identifiers/routing flags
+            // /consent/context) is built by the shared payload builder so the
+            // events endpoint and the dedicated purchases endpoint can never
+            // drift in what they collect. Endpoint-specific fields below.
+            var common = BoostOpsCommonPayloadBuilder.Build(
+                includeInstallTimestamp: includeInstallTimestamp,
+                includeInstallTimeExtras: includeInstallTimeExtras);
+
+            // For event correlation we honour the *stored* session ID
+            // (sticky for the lifetime of the session) instead of the freshly
+            // generated one the identifier manager hands out. The shared
+            // builder defaults to the manager's value; we override here.
+            string storedSessionId = GetStoredSessionId();
+            if (!string.IsNullOrEmpty(storedSessionId))
+            {
+                common.SessionId = storedSessionId;
+            }
+
             var identifiers = BoostOpsIdentifierManager.CreateIdentifierPayload(includeInstallTimeExtras);
-            
             var eventData = new AnalyticsEventData
             {
-                event_type = eventType,
-                schema_version = 7,  // v7: Production release with install_time_ms for SDK migration detection
-                timestamp_ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                elapsed_realtime_ms = BoostOpsDeviceInfo.GetElapsedRealtimeMilliseconds(), // Monotonic clock (tamper-proof)
-                event_id = System.Guid.NewGuid().ToString("N"),  // Unique event ID (never changes on retry) - database UNIQUE INDEX
+                event_type           = eventType,
+                schema_version       = common.SchemaVersion,
+                timestamp_ms         = common.TimestampMs,
+                elapsed_realtime_ms  = common.ElapsedRealtimeMs,
+                event_id             = common.EventId,
                 // Note: nonce is set in SendBatchCoroutine per attempt (NOT here)
-                
-                // Four-tier ID hierarchy (schema v6) - universal correlation identifiers
-                boostops_id = GetIdentifierValue(identifiers, "boostops_id"),
-                install_id = GetIdentifierValue(identifiers, "install_id"),
-                custom_user_id = GetIdentifierValue(identifiers, "custom_user_id"),
-                session_id = GetStoredSessionId(), // Use stored session ID for consistency within session
-                // Note: project_key is sent in HTTP header (BoostOps-Project-Key) ONLY, not in payload
-                // Note: storefront_country moved to context (environmental data)
-                
-                // TOP-LEVEL: Critical routing flags (for Cloudflare edge routing)
-                is_unity_editor = Application.isEditor,
-                is_debug_build = BoostOps.BoostOpsEnvironment.IsDebugBuild(),
-                is_testflight = BoostOps.BoostOpsEnvironment.IsTestFlight(),
-                is_emulator = BoostOps.BoostOpsEnvironment.IsEmulator(),
-                
-                // Privacy consent (top-level for compliance)
-                consent = CreateConsentData(),
-                
-                context = CreateEventContext(identifiers),
-                @event = CreateEventData(identifiers, includeInstallTimeExtras)
+
+                boostops_id          = common.BoostOpsId,
+                install_id           = common.InstallId,
+                custom_user_id       = common.CustomUserId,
+                session_id           = common.SessionId,
+                install_time_ms      = common.InstallTimeMs,
+
+                is_unity_editor      = common.IsUnityEditor,
+                is_debug_build       = common.IsDebugBuild,
+                is_testflight        = common.IsTestFlight,
+                is_emulator          = common.IsEmulator,
+
+                consent              = common.Consent,
+                context              = common.Context,
+                @event               = CreateEventData(identifiers, includeInstallTimeExtras),
             };
-            
-            // Include app install timestamp for first open events (SDK migration detection)
-            if (includeInstallTimestamp)
-            {
-                long installTimeSeconds = BoostOpsDeviceInfo.GetAppInstallTimestamp();
-                if (installTimeSeconds > 0)
-                {
-                    eventData.install_time_ms = installTimeSeconds * 1000; // Convert to milliseconds for consistency
-                    // Debug.Log($"[BoostOps] CreateEvent - install_time_ms set to: {eventData.install_time_ms} ({DateTimeOffset.FromUnixTimeSeconds(installTimeSeconds):yyyy-MM-dd HH:mm:ss} UTC)");
-                }
-            }
-            
-            // CRITICAL: Verify and recover install_id (essential for revenue attribution)
-            // This is especially important on Android where timing issues can cause missing install_id
-            if (string.IsNullOrEmpty(eventData.install_id))
-            {
-                Debug.LogWarning($"[BoostOps] ⚠️ CreateEvent({eventType}) - install_id was null/empty from identifiers, attempting direct fetch...");
-                eventData.install_id = BoostOpsIdentifierManager.GetInstallId();
-                if (string.IsNullOrEmpty(eventData.install_id))
-                {
-                    Debug.LogError($"[BoostOps] ❌ CreateEvent({eventType}) - FATAL: Could not get install_id! Event will be sent without it.");
-                }
-                else
-                {
-                    Debug.Log($"[BoostOps] ✅ CreateEvent({eventType}) - Recovered install_id: {eventData.install_id}");
-                }
-            }
-            
+
             // Debug: Output consolidated event payload
             LogEventPayload(eventData);
-            
+
             return eventData;
         }
         
@@ -727,76 +711,10 @@ namespace BoostOps.Analytics
             return eventData;
         }
         
-        /// <summary>
-        /// Create a BoostOps purchase event with comprehensive identifiers
-        /// All identifiers (boostops_id, app_account_token, platform-specific) are auto-included
-        /// </summary>
-        public static AnalyticsEventData CreatePurchaseEvent(string currency, decimal amount, string productId,
-            string transactionId = null, string receipt = null, int? quantity = 1, bool? isSubscription = null,
-            bool? isTrial = null, int? renewalNumber = null,
-            string attributionChannel = null, string attributionCampaignSlug = null, string attributionCampaign = null,
-            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null,
-            // Subscription metadata
-            string subscriptionPeriod = null, string originalTransactionId = null,
-            decimal? introductoryPrice = null, int? introductoryPriceCycles = null,
-            // Purchase history hints
-            bool? firstPurchase = null, int? purchaseCount = null)
-        {
-            // Standard event with all identifiers automatically included
-            var eventData = CreateEvent("boostops_purchase");
-            
-            // CRITICAL: Verify install_id is present (essential for Android revenue attribution)
-            if (string.IsNullOrEmpty(eventData.install_id))
-            {
-                Debug.LogError("[BoostOps] ❌ CRITICAL: CreatePurchaseEvent - install_id is null/empty! Attempting recovery...");
-                // Attempt to recover by explicitly fetching install_id
-                eventData.install_id = BoostOpsIdentifierManager.GetInstallId();
-                if (string.IsNullOrEmpty(eventData.install_id))
-                {
-                    Debug.LogError("[BoostOps] ❌ FATAL: Could not recover install_id for purchase event! Revenue attribution WILL FAIL.");
-                }
-                else
-                {
-                    Debug.Log($"[BoostOps] ✅ Recovered install_id for purchase event: {eventData.install_id}");
-                }
-            }
-            else
-            {
-                Debug.Log($"[BoostOps] ✅ CreatePurchaseEvent - install_id present: {eventData.install_id}");
-            }
-            
-            eventData.@event.currency = currency?.ToUpper();
-            eventData.@event.amount_micros = CurrencyMicros.ToMicros(amount);
-            eventData.@event.product_id = productId;
-            eventData.@event.transaction_id = transactionId;
-            eventData.@event.receipt = receipt;
-            eventData.@event.quantity = quantity;
-            eventData.@event.is_subscription = isSubscription;
-            eventData.@event.is_trial = isTrial;
-            eventData.@event.renewal_number = renewalNumber;
-            
-            // Subscription metadata (iOS parity)
-            eventData.@event.subscription_period = subscriptionPeriod;
-            eventData.@event.original_transaction_id = originalTransactionId;
-            eventData.@event.introductory_price_micros = introductoryPrice.HasValue ? CurrencyMicros.ToMicros(introductoryPrice.Value) : (long?)null;
-            eventData.@event.introductory_price_cycles = introductoryPriceCycles;
-            
-            // Purchase history hints (for segmentation and LTV analysis)
-            eventData.@event.first_purchase = firstPurchase;
-            eventData.@event.purchase_count = purchaseCount;
-            
-            // Attribution fields for lifecycle events
-            eventData.@event.attribution_channel = attributionChannel;
-            eventData.@event.attribution_campaign_slug = attributionCampaignSlug;
-            eventData.@event.attribution_campaign = attributionCampaign;
-            eventData.@event.is_reengagement = isReengagement;
-            eventData.@event.attribution_model = attributionModel;
-            eventData.@event.touch_type = touchType;
-            eventData.@event.touch_ts = touchTs;
-            
-            return eventData;
-        }
-        
+        // CreatePurchaseEvent removed in SDK 1.1.0. Purchases no longer flow
+        // through the generic event log; use BoostOpsAnalyticsContract.TrackPurchase
+        // (which delivers via the dedicated /v1/purchases endpoint) instead.
+
         /// <summary>
         /// Create a BoostOps attribution update event
         /// </summary>
@@ -1757,8 +1675,10 @@ namespace BoostOps.Analytics
         [System.Obsolete("Use AppOpen() with WithFirstOpen(true) instead. Separate install events are deprecated in favor of industry standard first session approach.")]
         public static EventBuilder Install() => new EventBuilder("boostops_install");
         public static EventBuilder AppOpen() => new EventBuilder("boostops_open");
-        public static EventBuilder Purchase(string currency, decimal amount, string productId) 
-            => new EventBuilder("boostops_purchase").WithRevenue(currency, amount, productId);
+
+        // Purchase factory removed in SDK 1.1.0. Purchases no longer flow
+        // through the generic event log; use BoostOpsAnalyticsContract.TrackPurchase
+        // (which delivers via the dedicated /v1/purchases endpoint) instead.
     }
 
     #region Privacy Consent Helper Methods

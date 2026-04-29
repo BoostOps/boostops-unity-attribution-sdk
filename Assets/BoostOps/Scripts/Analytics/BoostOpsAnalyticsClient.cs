@@ -933,45 +933,30 @@ namespace BoostOps.Analytics
             
             // Note: project_key is sent ONLY in HTTP header (BoostOps-Project-Key) for security, not in payload
             
-            var validEventTypes = new[] { 
+            // Purchase events are NOT accepted on the generic /v1/events path
+            // as of SDK 1.1.0. Use BoostOpsAnalyticsContract.TrackPurchase, which
+            // routes to the dedicated /v1/purchases endpoint via BoostOpsPurchaseClient.
+            var validEventTypes = new[] {
                 BoostOpsAnalyticsContract.EventNames.IMPRESSION,
                 BoostOpsAnalyticsContract.EventNames.CLICK,
                 BoostOpsAnalyticsContract.EventNames.APP_OPEN,  // Includes installs (first_open=true)
-                BoostOpsAnalyticsContract.EventNames.PURCHASE,
                 BoostOpsAnalyticsContract.EventNames.INSTALL_ATTRIBUTION_UPDATE
             };
             if (Array.IndexOf(validEventTypes, eventData.event_type) == -1)
             {
-                BoostOpsLogger.LogError("Analytics", $"Invalid event type: {eventData.event_type}");
-                return false;
-            }
-            
-            // CRITICAL: Verify install_id for purchase events (essential for revenue attribution)
-            // This is especially important on Android where timing issues can cause missing install_id
-            if (eventData.event_type == BoostOpsAnalyticsContract.EventNames.PURCHASE)
-            {
-                if (string.IsNullOrEmpty(eventData.install_id))
+                if (eventData.event_type == BoostOpsAnalyticsContract.EventNames.PURCHASE)
                 {
-                    BoostOpsLogger.LogError("Analytics", "❌ CRITICAL: Purchase event is missing install_id! Attempting recovery...");
-                    // Attempt to recover by fetching install_id
-                    eventData.install_id = BoostOps.Analytics.BoostOpsIdentifierManager.GetInstallId();
-                    if (string.IsNullOrEmpty(eventData.install_id))
-                    {
-                        BoostOpsLogger.LogError("Analytics", "❌ FATAL: Could not recover install_id for purchase event! Event WILL BE BLOCKED.");
-                        // Block the event - sending purchase without install_id is worse than not sending
-                        return false;
-                    }
-                    else
-                    {
-                        BoostOpsLogger.LogInfo("Analytics", $"✅ Recovered install_id for purchase event: {eventData.install_id}");
-                    }
+                    BoostOpsLogger.LogError("Analytics",
+                        "❌ boostops_purchase is no longer accepted on /v1/events. " +
+                        "Use BoostOpsAnalyticsContract.TrackPurchase, which delivers via the dedicated /v1/purchases endpoint.");
                 }
                 else
                 {
-                    BoostOpsLogger.LogDebug("Analytics", $"✅ Purchase event has install_id: {eventData.install_id}");
+                    BoostOpsLogger.LogError("Analytics", $"Invalid event type: {eventData.event_type}");
                 }
+                return false;
             }
-            
+
             return true;
         }
         
@@ -1095,144 +1080,23 @@ namespace BoostOps.Analytics
         }
         
         /// <summary>
-        /// Create clean JSON for context data
+        /// Build the inner JSON of the <c>context</c> block. Delegates to the
+        /// shared serializer so the events endpoint and the dedicated
+        /// purchases endpoint emit identical context shapes.
         /// </summary>
         private string CreateCleanContextJson(EventContext context)
         {
-            var contextParts = new List<string>();
-            
-            if (!string.IsNullOrEmpty(context.source)) contextParts.Add($"\"source\":\"{context.source}\"");
-            if (!string.IsNullOrEmpty(context.platform)) contextParts.Add($"\"os\":\"{context.platform}\"");
-            if (!string.IsNullOrEmpty(context.os_version)) contextParts.Add($"\"os_version\":\"{context.os_version}\"");
-            if (!string.IsNullOrEmpty(context.app_version)) contextParts.Add($"\"app_version\":\"{context.app_version}\"");
-            if (!string.IsNullOrEmpty(context.app_identifier)) contextParts.Add($"\"app_identifier\":\"{context.app_identifier}\"");
-            if (!string.IsNullOrEmpty(context.sdk_version)) contextParts.Add($"\"sdk_version\":\"{context.sdk_version}\"");
-            if (!string.IsNullOrEmpty(context.store)) contextParts.Add($"\"store\":\"{context.store}\"");
-            if (!string.IsNullOrEmpty(context.store_id)) contextParts.Add($"\"store_id\":\"{context.store_id}\"");
-            if (!string.IsNullOrEmpty(context.device_model)) contextParts.Add($"\"device_model\":\"{context.device_model}\"");
-            if (!string.IsNullOrEmpty(context.device_brand)) contextParts.Add($"\"device_brand\":\"{context.device_brand}\"");
-            if (!string.IsNullOrEmpty(context.country)) contextParts.Add($"\"country\":\"{context.country}\"");
-            if (!string.IsNullOrEmpty(context.storefront_country)) contextParts.Add($"\"storefront_country\":\"{context.storefront_country}\"");
-            if (!string.IsNullOrEmpty(context.region)) contextParts.Add($"\"region\":\"{context.region}\"");
-            if (!string.IsNullOrEmpty(context.city)) contextParts.Add($"\"city\":\"{context.city}\"");
-            if (context.timezone_offset_minutes.HasValue) contextParts.Add($"\"timezone_offset_minutes\":{context.timezone_offset_minutes.Value}");
-            if (!string.IsNullOrEmpty(context.locale)) contextParts.Add($"\"locale\":\"{context.locale}\"");
-            if (!string.IsNullOrEmpty(context.language)) contextParts.Add($"\"language\":\"{context.language}\"");
-            if (!string.IsNullOrEmpty(context.carrier)) contextParts.Add($"\"carrier\":\"{context.carrier}\"");
-            if (!string.IsNullOrEmpty(context.connection_type)) contextParts.Add($"\"connection_type\":\"{context.connection_type}\"");
-            if (!string.IsNullOrEmpty(context.ip_address)) contextParts.Add($"\"ip_address\":\"{context.ip_address}\"");
-            // Note: timestamp is at top-level (milliseconds precision) - not duplicated in context
-            
-            // Device identifiers (cross-app correlation)
-            // Note: install_id and custom_user_id moved to top-level (schema v6)
-            if (!string.IsNullOrEmpty(context.app_account_token)) contextParts.Add($"\"app_account_token\":\"{context.app_account_token}\"");
-            if (!string.IsNullOrEmpty(context.idfv)) contextParts.Add($"\"idfv\":\"{context.idfv}\"");
-            if (!string.IsNullOrEmpty(context.idfa)) contextParts.Add($"\"idfa\":\"{context.idfa}\"");
-            if (!string.IsNullOrEmpty(context.asid_sha256)) contextParts.Add($"\"asid_sha256\":\"{context.asid_sha256}\"");
-            if (!string.IsNullOrEmpty(context.gaid)) contextParts.Add($"\"gaid\":\"{context.gaid}\"");
-            if (!string.IsNullOrEmpty(context.firebase_app_id)) contextParts.Add($"\"firebase_app_id\":\"{context.firebase_app_id}\"");
-            if (!string.IsNullOrEmpty(context.windows_device_id)) contextParts.Add($"\"windows_device_id\":\"{context.windows_device_id}\"");
-            if (!string.IsNullOrEmpty(context.windows_machine_guid)) contextParts.Add($"\"windows_machine_guid\":\"{context.windows_machine_guid}\"");
-            if (!string.IsNullOrEmpty(context.msaid)) contextParts.Add($"\"msaid\":\"{context.msaid}\"");
-            
-            // Environment detection
-            if (!string.IsNullOrEmpty(context.environment)) contextParts.Add($"\"environment\":\"{context.environment}\"");
-            if (!string.IsNullOrEmpty(context.installer_source)) contextParts.Add($"\"installer_source\":\"{context.installer_source}\"");
-            
-            // Privacy consent data is now handled at the top-level event data
-            
-            return string.Join(",", contextParts);
+            return BoostOpsCommonPayloadJson.BuildContextBody(context);
         }
         
         /// <summary>
-        /// Create clean JSON for consent data (privacy compliance)
+        /// Build the inner JSON of the <c>consent</c> block. Delegates to the
+        /// shared serializer so the events endpoint and the dedicated
+        /// purchases endpoint emit identical consent shapes.
         /// </summary>
         private string CreateCleanConsentJson(ConsentData consent)
         {
-            var consentParts = new List<string>();
-            
-            // Framework identification (backward compatible + enhanced)
-            if (!string.IsNullOrEmpty(consent.framework)) 
-                consentParts.Add($"\"framework\":\"{consent.framework}\"");
-            if (consent.gdpr_consent_required.HasValue) 
-                consentParts.Add($"\"gdpr_required\":{consent.gdpr_consent_required.Value.ToString().ToLower()}");
-            if (consent.ccpa_consent_required.HasValue) 
-                consentParts.Add($"\"ccpa_required\":{consent.ccpa_consent_required.Value.ToString().ToLower()}");
-            
-            // Consent timestamps and metadata (enhanced fields)
-            if (consent.consent_timestamp.HasValue) 
-                consentParts.Add($"\"timestamp\":{consent.consent_timestamp.Value}");
-            if (!string.IsNullOrEmpty(consent.consent_version)) 
-                consentParts.Add($"\"version\":\"{consent.consent_version}\"");
-            if (!string.IsNullOrEmpty(consent.consent_language)) 
-                consentParts.Add($"\"language\":\"{consent.consent_language}\"");
-            if (!string.IsNullOrEmpty(consent.consent_method)) 
-                consentParts.Add($"\"method\":\"{consent.consent_method}\"");
-            if (!string.IsNullOrEmpty(consent.consent_source)) 
-                consentParts.Add($"\"source\":\"{consent.consent_source}\"");
-            if (!string.IsNullOrEmpty(consent.legal_basis)) 
-                consentParts.Add($"\"legal_basis\":\"{consent.legal_basis}\"");
-            
-            // Legacy TCF/consent string support
-            if (!string.IsNullOrEmpty(consent.consent_string)) 
-                consentParts.Add($"\"consent_string\":\"{consent.consent_string}\"");
-            
-            // GDPR-specific consent (structured)
-            if (consent.gdpr != null)
-            {
-                var gdprParts = new List<string>();
-                if (consent.gdpr.applies.HasValue) 
-                    gdprParts.Add($"\"applies\":{consent.gdpr.applies.Value.ToString().ToLower()}");
-                if (consent.gdpr.consent_given.HasValue) 
-                    gdprParts.Add($"\"consent_given\":{consent.gdpr.consent_given.Value.ToString().ToLower()}");
-                if (consent.gdpr.analytics.HasValue) 
-                    gdprParts.Add($"\"analytics\":{consent.gdpr.analytics.Value.ToString().ToLower()}");
-                if (consent.gdpr.advertising.HasValue) 
-                    gdprParts.Add($"\"advertising\":{consent.gdpr.advertising.Value.ToString().ToLower()}");
-                if (consent.gdpr.measurement.HasValue) 
-                    gdprParts.Add($"\"measurement\":{consent.gdpr.measurement.Value.ToString().ToLower()}");
-                if (!string.IsNullOrEmpty(consent.gdpr.legal_basis)) 
-                    gdprParts.Add($"\"legal_basis\":\"{consent.gdpr.legal_basis}\"");
-                
-                if (gdprParts.Count > 0)
-                    consentParts.Add($"\"gdpr\":{{{string.Join(",", gdprParts)}}}");
-            }
-            
-            // ATT (iOS App Tracking Transparency)
-            if (consent.att != null)
-            {
-                var attParts = new List<string>();
-                if (!string.IsNullOrEmpty(consent.att.status)) 
-                    attParts.Add($"\"status\":\"{consent.att.status}\"");
-                if (consent.att.authorized_time.HasValue) 
-                    attParts.Add($"\"authorized_time\":{consent.att.authorized_time.Value}");
-                if (consent.att.idfa_available.HasValue) 
-                    attParts.Add($"\"idfa_available\":{consent.att.idfa_available.Value.ToString().ToLower()}");
-                
-                if (attParts.Count > 0)
-                    consentParts.Add($"\"att\":{{{string.Join(",", attParts)}}}");
-            }
-            
-            // Android privacy settings
-            if (consent.android != null)
-            {
-                var androidParts = new List<string>();
-                if (consent.android.advertising_id.HasValue) 
-                    androidParts.Add($"\"advertising_id\":{consent.android.advertising_id.Value.ToString().ToLower()}");
-                if (consent.android.limited_ad_tracking.HasValue) 
-                    androidParts.Add($"\"limited_ad_tracking\":{consent.android.limited_ad_tracking.Value.ToString().ToLower()}");
-                
-                if (androidParts.Count > 0)
-                    consentParts.Add($"\"android\":{{{string.Join(",", androidParts)}}}");
-            }
-            
-            // Withdrawal tracking (enhanced fields)
-            if (consent.withdrawal_timestamp.HasValue) 
-                consentParts.Add($"\"withdrawal_timestamp\":{consent.withdrawal_timestamp.Value}");
-            if (!string.IsNullOrEmpty(consent.withdrawal_method)) 
-                consentParts.Add($"\"withdrawal_method\":\"{consent.withdrawal_method}\"");
-            
-            return string.Join(",", consentParts);
+            return BoostOpsCommonPayloadJson.BuildConsentBody(consent);
         }
         
         /// <summary>
