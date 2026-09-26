@@ -448,7 +448,7 @@ namespace BoostOps
             if (requestData != null)
             {
                 string jsonData = JsonUtility.ToJson(requestData);
-                Debug.Log($"[UnityWaspClient] Request data: {jsonData}");
+                Debug.Log($"[UnityWaspClient] Request data: {RedactSensitiveJson(jsonData)}");
                 byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(jsonData);
                 request.uploadHandler = new UploadHandlerRaw(bodyRaw);
             }
@@ -461,13 +461,26 @@ namespace BoostOps
             {
                 Debug.LogError($"[UnityWaspClient] ❌ API call failed: {request.error}");
                 Debug.LogError($"[UnityWaspClient] Response code: {request.responseCode}");
-                Debug.LogError($"[UnityWaspClient] Response body: {request.downloadHandler.text}");
+                Debug.LogError($"[UnityWaspClient] Response body: {RedactSensitiveJson(request.downloadHandler.text)}");
                 return null;
             }
             
             Debug.Log($"[UnityWaspClient] ✅ API call successful");
-            Debug.Log($"[UnityWaspClient] Response: {request.downloadHandler.text}");
+            Debug.Log($"[UnityWaspClient] Response: {RedactSensitiveJson(request.downloadHandler.text)}");
             return request.downloadHandler.text;
+        }
+
+        /// <summary>
+        /// Redacts token/credential fields from JSON before it is written to
+        /// the Unity console (and thus Editor.log on disk).
+        /// </summary>
+        private static string RedactSensitiveJson(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return json;
+            return System.Text.RegularExpressions.Regex.Replace(
+                json,
+                "(\"(?:jwt_token|token|api_key|apiKey|project_key|access_token|refresh_token)\"\\s*:\\s*\")[^\"]*(\")",
+                "$1[REDACTED]$2");
         }
     }
     

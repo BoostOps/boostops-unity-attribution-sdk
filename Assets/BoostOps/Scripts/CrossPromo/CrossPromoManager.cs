@@ -81,30 +81,18 @@ namespace BoostOps.CrossPromo
         /// </summary>
         public void LoadSettings()
         {
+            string filePath = Path.Combine(Application.streamingAssetsPath, "cross_promo_local.json");
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // On Android, StreamingAssets lives inside the compressed APK, so
+            // File.Exists/File.ReadAllText always fail. Read via UnityWebRequest.
+            StartCoroutine(LoadSettingsFromStreamingAssets(filePath));
+#else
             try
             {
-                string filePath = Path.Combine(Application.streamingAssetsPath, "cross_promo_local.json");
-                
                 if (File.Exists(filePath))
                 {
-                    string json = File.ReadAllText(filePath);
-                    settings = JsonUtility.FromJson<CrossPromoSettings>(json);
-                    
-                    if (settings != null && settings.sources != null && settings.sources.Length > 0)
-                    {
-                        isInitialized = true;
-                        LoadFrequencyData();
-                        if (resetFrequencyCapsOnStart)
-                        {
-                            ResetAllFrequencyCaps();
-                        }
-                        DebugLog($"✅ Loaded cross-promo settings: {TargetGameCount} target games");
-                        OnSettingsLoaded?.Invoke(settings);
-                    }
-                    else
-                    {
-                        Debug.LogWarning("[CrossPromoManager] Invalid settings structure in JSON file");
-                    }
+                    ApplySettingsJson(File.ReadAllText(filePath));
                 }
                 else
                 {
@@ -114,6 +102,54 @@ namespace BoostOps.CrossPromo
             catch (System.Exception e)
             {
                 Debug.LogError($"[CrossPromoManager] Failed to load settings: {e.Message}");
+            }
+#endif
+        }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        private System.Collections.IEnumerator LoadSettingsFromStreamingAssets(string filePath)
+        {
+            using (var request = UnityEngine.Networking.UnityWebRequest.Get(filePath))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
+                {
+                    ApplySettingsJson(request.downloadHandler.text);
+                }
+                else
+                {
+                    DebugLog($"❌ Cross-promo settings file not found: {filePath} ({request.error})");
+                }
+            }
+        }
+#endif
+
+        private void ApplySettingsJson(string json)
+        {
+            try
+            {
+                settings = JsonUtility.FromJson<CrossPromoSettings>(json);
+
+                if (settings != null && settings.sources != null && settings.sources.Length > 0)
+                {
+                    isInitialized = true;
+                    LoadFrequencyData();
+                    if (resetFrequencyCapsOnStart)
+                    {
+                        ResetAllFrequencyCaps();
+                    }
+                    DebugLog($"✅ Loaded cross-promo settings: {TargetGameCount} target games");
+                    OnSettingsLoaded?.Invoke(settings);
+                }
+                else
+                {
+                    Debug.LogWarning("[CrossPromoManager] Invalid settings structure in JSON file");
+                }
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[CrossPromoManager] Failed to parse settings: {e.Message}");
             }
         }
         
@@ -286,7 +322,8 @@ namespace BoostOps.CrossPromo
         /// </summary>
         private void CheckAndHandleDateChange()
         {
-            string todayDate = System.DateTime.Now.ToString("yyyy-MM-dd");
+            // UTC so device timezone/clock changes can't reset daily frequency caps
+            string todayDate = System.DateTime.UtcNow.ToString("yyyy-MM-dd");
             if (currentDate != todayDate)
             {
                 DebugLog($"Date changed from {currentDate} to {todayDate} - resetting frequency caps");
@@ -362,8 +399,8 @@ namespace BoostOps.CrossPromo
         {
             if (!enableFrequencyCapping) return;
             
-            // Get today's date in YYYY-MM-DD format
-            currentDate = System.DateTime.Now.ToString("yyyy-MM-dd");
+            // Get today's date in YYYY-MM-DD format (UTC — see CheckAndHandleDateChange)
+            currentDate = System.DateTime.UtcNow.ToString("yyyy-MM-dd");
             string data = PlayerPrefs.GetString("CrossPromo_FrequencyData", "");
             
             if (!string.IsNullOrEmpty(data))

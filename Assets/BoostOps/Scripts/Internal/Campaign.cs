@@ -63,17 +63,25 @@ namespace BoostOps
         public bool HasHourRestrictions => start_hour >= 0 && end_hour >= 0;
         
         /// <summary>
-        /// Check if the schedule is active right now
+        /// Check if the schedule is active right now.
+        /// The absolute start/end window is evaluated in UTC (server dates are
+        /// ISO 8601, typically with a UTC offset) so timezone changes or clock
+        /// manipulation on the device don't extend/shrink campaign windows.
+        /// Day-of-week and hour restrictions are intentionally evaluated in
+        /// device-local time — dayparting ("evenings", "weekends") targets the
+        /// user's local day/hour.
         /// </summary>
         public bool IsActive(DateTime now)
         {
-            // Check date range
-            if (!IsWithinDateRange(now)) return false;
+            // Check date range (in UTC)
+            if (!IsWithinDateRange(now.ToUniversalTime())) return false;
+            
+            var localNow = now.ToLocalTime();
             
             // Check day of week (if specified)
             if (days != null && days.Length > 0)
             {
-                int currentDayOfWeek = (int)now.DayOfWeek; // 0=Sunday, 1=Monday, ..., 6=Saturday
+                int currentDayOfWeek = (int)localNow.DayOfWeek; // 0=Sunday, 1=Monday, ..., 6=Saturday
                 
                 if (!System.Array.Exists(days, day => day == currentDayOfWeek))
                     return false;
@@ -82,18 +90,32 @@ namespace BoostOps
             // Check hour range (if specified)
             if (HasHourRestrictions)
             {
-                int currentHour = now.Hour;
+                int currentHour = localNow.Hour;
                 return currentHour >= start_hour && currentHour < end_hour;
             }
             
             return true;
         }
         
-        private bool IsWithinDateRange(DateTime now)
+        private bool IsWithinDateRange(DateTime utcNow)
         {
-            var start = StartDate;
-            var end = EndDate;
-            return start <= now && (end == null || end >= now);
+            var start = NormalizeToUtc(StartDate);
+            var end = EndDate.HasValue ? (DateTime?)NormalizeToUtc(EndDate.Value) : null;
+            return start <= utcNow && (end == null || end >= utcNow);
+        }
+        
+        private static DateTime NormalizeToUtc(DateTime value)
+        {
+            switch (value.Kind)
+            {
+                case DateTimeKind.Utc:
+                    return value;
+                case DateTimeKind.Local:
+                    return value.ToUniversalTime();
+                default:
+                    // Server dates without an explicit offset are treated as UTC
+                    return DateTime.SpecifyKind(value, DateTimeKind.Utc);
+            }
         }
         
         private DateTime ParseDateTime(string dateTimeString)
@@ -514,7 +536,9 @@ namespace BoostOps
 #elif UNITY_ANDROID
             return google;
 #elif UNITY_WSA || UNITY_WINRT || UNITY_STANDALONE_WIN
-            return microsoft;
+            // Convert a Microsoft Store web URL to the Store-app protocol so we don't open the
+            // browser. (No Store ID available at this level; ID-based resolution happens upstream.)
+            return BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(microsoft, null);
 #else
             return GetFirstAvailableUrl();
 #endif
@@ -560,8 +584,10 @@ namespace BoostOps
             return apple;
 #elif UNITY_ANDROID
             return google;
-#elif UNITY_STANDALONE_WIN
-            return microsoft;
+#elif UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT
+            // Convert a Microsoft Store web URL to the Store-app protocol so we don't open the
+            // browser. (No Store ID available at this level; ID-based resolution happens upstream.)
+            return BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(microsoft, null);
 #elif UNITY_WEBGL
             return web;
 #else

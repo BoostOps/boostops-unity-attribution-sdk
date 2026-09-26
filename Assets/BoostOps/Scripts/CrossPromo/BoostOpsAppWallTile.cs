@@ -40,6 +40,12 @@ namespace BoostOps.CrossPromo
         private long impressionTimestamp; // For time_to_click calculation
         private string containerImpressionId; // Link this click back to the container (app wall)
         
+        // Runtime-created icon objects owned by this tile. Destroyed in
+        // OnDestroy — Sprite.Create / downloaded textures are never GC'd by
+        // Unity automatically, so each recycled tile would otherwise leak.
+        private Sprite runtimeIconSprite;
+        private Texture2D runtimeIconTexture;
+        
         /// <summary>
         /// Setup the tile with app data and impression tracking
         /// </summary>
@@ -152,6 +158,10 @@ namespace BoostOps.CrossPromo
                         new Vector2(0.5f, 0.5f)
                     );
                     
+                    // Track the created sprite for cleanup (the texture came
+                    // from Resources, so it is NOT ours to destroy)
+                    ReplaceRuntimeIcon(iconSprite, null);
+                    
                     appIcon.sprite = iconSprite;
                     appIcon.enabled = true;
                     // Icon loaded successfully - no log needed
@@ -191,6 +201,10 @@ namespace BoostOps.CrossPromo
                             new Rect(0, 0, texture.width, texture.height),
                             new Vector2(0.5f, 0.5f)
                         );
+                        
+                        // Both the downloaded texture and the created sprite
+                        // are owned by this tile - track for cleanup
+                        ReplaceRuntimeIcon(iconSprite, texture);
                         
                         appIcon.sprite = iconSprite;
                         appIcon.enabled = true;
@@ -297,6 +311,24 @@ namespace BoostOps.CrossPromo
             Application.OpenURL(storeUrl);
         }
         
+        /// <summary>
+        /// Swap in newly created icon objects, destroying any previous
+        /// runtime-created ones (a tile can be re-Setup when the wall refreshes).
+        /// </summary>
+        private void ReplaceRuntimeIcon(Sprite newSprite, Texture2D newTexture)
+        {
+            if (runtimeIconSprite != null)
+            {
+                Destroy(runtimeIconSprite);
+            }
+            if (runtimeIconTexture != null)
+            {
+                Destroy(runtimeIconTexture);
+            }
+            runtimeIconSprite = newSprite;
+            runtimeIconTexture = newTexture;
+        }
+        
         private void OnDestroy()
         {
             // Clean up button listener
@@ -304,6 +336,9 @@ namespace BoostOps.CrossPromo
             {
                 installButton.onClick.RemoveAllListeners();
             }
+            
+            // Destroy runtime-created icon sprite/texture to avoid leaks
+            ReplaceRuntimeIcon(null, null);
         }
     }
 }

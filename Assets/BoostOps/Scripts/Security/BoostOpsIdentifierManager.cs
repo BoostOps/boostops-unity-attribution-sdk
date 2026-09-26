@@ -730,9 +730,102 @@ namespace BoostOps.Analytics
                 return null;
             }
         }
+        // ASHWID is a UWP-only WinRT API (SystemIdentification); not available to Win32 standalone.
+        public static string GetWindowsAshwid() => null;
+#elif UNITY_WSA
+        // UWP is sandboxed: no Win32 registry P/Invoke. Unity's per-device id is the best
+        // stable identifier available and works on UWP.
+        public static string GetWindowsDeviceId()
+        {
+            try
+            {
+                string rawId = SystemInfo.deviceUniqueIdentifier;
+                return (!string.IsNullOrEmpty(rawId) && rawId != "n/a") ? rawId : null;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[BoostOps] Could not get UWP device ID: {e.Message}");
+                return null;
+            }
+        }
+
+#if ENABLE_WINMD_SUPPORT
+        /// <summary>
+        /// Convert a WinRT IBuffer to a lowercase hex string.
+        /// </summary>
+        private static string BufferToHex(Windows.Storage.Streams.IBuffer buffer)
+        {
+            if (buffer == null || buffer.Length == 0)
+                return null;
+            var reader = Windows.Storage.Streams.DataReader.FromBuffer(buffer);
+            byte[] bytes = new byte[buffer.Length];
+            reader.ReadBytes(bytes);
+            var sb = new StringBuilder(bytes.Length * 2);
+            foreach (byte b in bytes)
+                sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+#endif
+
+        // No HKLM\Cryptography\MachineGuid under the UWP sandbox. We deliberately return null here
+        // (rather than aliasing a different value) so the machine-guid signal is reported ONLY when
+        // it is a true machine GUID. UWP's stable hardware signal is reported separately as ASHWID.
+        public static string GetWindowsMachineGuid() => null;
+
+        /// <summary>
+        /// UWP ASHWID from Windows.System.Profile.SystemIdentification.GetSystemIdForPublisher():
+        /// a stable, per-PUBLISHER hardware ID that survives reinstall and is shared across all of
+        /// this publisher's apps - the best deterministic cross-app key available under the sandbox.
+        /// Returns null when no hardware ID is available (e.g. some VMs) or WinRT isn't accessible
+        /// (editor); the per-device id is reported separately so we don't alias it here.
+        /// </summary>
+        public static string GetWindowsAshwid()
+        {
+            try
+            {
+#if ENABLE_WINMD_SUPPORT
+                var systemId = Windows.System.Profile.SystemIdentification.GetSystemIdForPublisher();
+                if (systemId != null && systemId.Source != Windows.System.Profile.SystemIdentificationSource.None)
+                {
+                    string ashwid = BufferToHex(systemId.Id);
+                    if (!string.IsNullOrEmpty(ashwid))
+                        return ashwid;
+                }
+                Debug.Log("[BoostOps] UWP ASHWID unavailable (source=None)");
+#endif
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[BoostOps] Could not get UWP ASHWID: {e.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// UWP Windows Advertising ID via Windows.System.UserProfile.AdvertisingManager.
+        /// Returns null when the user has disabled it (empty string) or WinRT isn't accessible.
+        /// </summary>
+        public static string GetWindowsAdvertisingId()
+        {
+            try
+            {
+#if ENABLE_WINMD_SUPPORT
+                string adId = Windows.System.UserProfile.AdvertisingManager.AdvertisingId;
+                if (!string.IsNullOrEmpty(adId) && adId != "00000000-0000-0000-0000-000000000000")
+                    return adId;
+                Debug.Log("[BoostOps] UWP Advertising ID is empty (user disabled or unavailable)");
+#endif
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[BoostOps] Could not get UWP Advertising ID: {e.Message}");
+            }
+            return null;
+        }
 #else
         public static string GetWindowsDeviceId() => null;
         public static string GetWindowsMachineGuid() => null;
+        public static string GetWindowsAshwid() => null;
         public static string GetWindowsAdvertisingId() => null;
 #endif
         
@@ -1645,7 +1738,7 @@ namespace BoostOps.Analytics
             }
 #endif
             
-#if UNITY_STANDALONE_WIN
+#if UNITY_STANDALONE_WIN || UNITY_WSA
             // Windows-specific identifiers (works in both editor and builds since editor IS Windows)
             var windowsDeviceId = GetWindowsDeviceId();
             if (!string.IsNullOrEmpty(windowsDeviceId))
@@ -1653,10 +1746,19 @@ namespace BoostOps.Analytics
                 identifiers["windows_device_id"] = windowsDeviceId;
             }
             
+            // Machine-wide Cryptography GUID - standalone (Win32) only; null under the UWP sandbox.
             var windowsMachineGuid = GetWindowsMachineGuid();
             if (!string.IsNullOrEmpty(windowsMachineGuid))
             {
                 identifiers["windows_machine_guid"] = windowsMachineGuid;
+            }
+
+            // ASHWID - per-publisher hardware ID; UWP only. Distinct from windows_machine_guid so
+            // the server knows exactly which identifier it received and its scope/semantics.
+            var windowsAshwid = GetWindowsAshwid();
+            if (!string.IsNullOrEmpty(windowsAshwid))
+            {
+                identifiers["windows_ashwid"] = windowsAshwid;
             }
             
             var windowsAdvertisingId = GetWindowsAdvertisingId();

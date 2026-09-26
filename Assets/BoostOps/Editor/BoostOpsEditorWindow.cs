@@ -13387,8 +13387,15 @@ namespace BoostOps.Editor
         public static void ManualProcessOAuthToken()
         {
             var window = GetWindow<BoostOpsEditorWindow>();
-            string token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsImVtYWlsIjoic3RlcGhlbkBsdWNreWphY2twb3RjYXNpbm8uY29tIiwiZGlzcGxheU5hbWUiOiJTdGVwaGVuIFN1bGxpdmFuIiwic2NvcGUiOiJ1bml0eV9wcm9qZWN0X3N5bmMiLCJhdWRpZW5jZSI6ImJvb3N0b3BzLXVuaXR5IiwiaXNzIjoiYm9vc3RvcHMtdW5pdHktYXV0aCIsImlhdCI6MTc1NDAwOTk2NywiZXhwIjoxNzU2NjAxOTY3fQ.-JJ1nsa869hgI43Qe-0nHwb9yBqQs89qDA6014mXHdY";
-            Debug.Log("[BoostOps] 🛠️ Processing token manually for debugging...");
+            // Never hardcode tokens here — paste the JWT into the system
+            // clipboard before running this menu item.
+            string token = EditorGUIUtility.systemCopyBuffer?.Trim();
+            if (string.IsNullOrEmpty(token) || !token.StartsWith("eyJ"))
+            {
+                Debug.LogError("[BoostOps] No JWT found in clipboard. Copy the token to the clipboard, then run this menu item again.");
+                return;
+            }
+            Debug.Log("[BoostOps] 🛠️ Processing token from clipboard for debugging...");
             window.HandleOAuthSuccess(token);
         }
         #endif

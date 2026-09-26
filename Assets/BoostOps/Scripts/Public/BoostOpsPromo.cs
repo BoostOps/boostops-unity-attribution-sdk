@@ -133,6 +133,10 @@ namespace BoostOps
             return storeUrls.google ?? storeUrls.amazon ?? storeUrls.samsung;
 #elif UNITY_STANDALONE_OSX
             return storeUrls.apple; // Mac App Store
+#elif UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT
+            // Windows / UWP: resolve the Microsoft Store destination (server microsoft URL,
+            // else synthesized from store_ids.microsoft). Never fall back to Google/Apple here.
+            return BoostOps.BoostOpsStoreDetector.GetWindowsStoreUrl(Campaign);
 #else
             return storeUrls.google ?? storeUrls.apple;
 #endif

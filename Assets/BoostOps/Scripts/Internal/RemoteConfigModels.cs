@@ -241,7 +241,16 @@ namespace BoostOps.Core
 #elif UNITY_ANDROID
             return store_urls.google ?? store_urls.amazon ?? store_urls.samsung;
 #elif UNITY_WSA || UNITY_STANDALONE_WIN
-            return store_urls.microsoft;
+            // Resolve to a Store-app protocol link (ms-windows-store://pdp/?productid=XXXX) so we
+            // launch the Microsoft Store app directly instead of opening apps.microsoft.com in the
+            // browser. Prefers store_ids.microsoft (canonical) and converts a web microsoft URL
+            // when only that is present. Never falls back to a non-Windows store link.
+            string msUrl = BoostOps.BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(
+                store_urls.microsoft,
+                store_ids != null ? store_ids.microsoft : null);
+            // Tag with the campaign id for Microsoft Store acquisition reporting.
+            return BoostOps.BoostOpsStoreDetector.AppendMicrosoftCampaignId(
+                msUrl, campaign_id ?? campaign_slug);
 #elif UNITY_WEBGL
             return store_urls.web;
 #else

@@ -97,26 +97,29 @@ namespace BoostOps
                     return null;
                 }
                 
-                // Check if IDFA has changed (user reset it)
-                string cachedRawIdfa = PlayerPrefs.GetString(BoostOpsPlayerPrefsKeys.RAW_IDFA_CACHE, "");
+                // PRIVACY: never persist the raw IDFA. Reset detection works by
+                // comparing the hash of the current IDFA against the cached
+                // hash — identical information, without storing a reversible
+                // advertising identifier in unencrypted PlayerPrefs.
+                string currentHashedIdfa = ComputeSha256Hash(rawIdfa);
                 string cachedHashedIdfa = PlayerPrefs.GetString(BoostOpsPlayerPrefsKeys.HASHED_IDFA, "");
-                
-                if (rawIdfa != cachedRawIdfa)
+
+                if (currentHashedIdfa != cachedHashedIdfa)
                 {
-                    // IDFA changed or first time - recompute hash
-                    _hashedIdfa = ComputeSha256Hash(rawIdfa);
-                    PlayerPrefs.SetString(BoostOpsPlayerPrefsKeys.HASHED_IDFA, _hashedIdfa);
-                    PlayerPrefs.SetString(BoostOpsPlayerPrefsKeys.RAW_IDFA_CACHE, rawIdfa);
+                    PlayerPrefs.SetString(BoostOpsPlayerPrefsKeys.HASHED_IDFA, currentHashedIdfa);
                     PlayerPrefs.Save();
-                    
+
                     BoostOpsLogger.LogDebug("DeviceId", "Updated hashed IDFA (raw IDFA changed)");
                 }
-                else
+
+                // One-time cleanup: remove any raw IDFA persisted by older SDK versions
+                if (PlayerPrefs.HasKey(BoostOpsPlayerPrefsKeys.RAW_IDFA_CACHE))
                 {
-                    // Use cached hash
-                    _hashedIdfa = cachedHashedIdfa;
+                    PlayerPrefs.DeleteKey(BoostOpsPlayerPrefsKeys.RAW_IDFA_CACHE);
+                    PlayerPrefs.Save();
                 }
-                
+
+                _hashedIdfa = currentHashedIdfa;
                 return _hashedIdfa;
 #else
                 return null;

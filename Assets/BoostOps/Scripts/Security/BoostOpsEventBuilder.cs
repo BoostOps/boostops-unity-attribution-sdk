@@ -633,7 +633,8 @@ namespace BoostOps.Analytics
             long? timeSinceInstallMs = null, bool? isFirstSession = null, bool? organic = null, bool? reinstall = null,
             long? installSizeBytes = null, int? installDurationMs = null,
             string attributionChannel = null, string attributionCampaignSlug = null, string attributionCampaign = null,
-            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null)
+            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null,
+            string attributionSource = null, string attributionMethod = null)
         {
             // Include install-time extras if this is the first session (industry standard)
             bool includeInstallTimeExtras = isFirstSession == true;
@@ -667,6 +668,8 @@ namespace BoostOps.Analytics
             eventData.@event.attribution_model = attributionModel;
             eventData.@event.touch_type = touchType;
             eventData.@event.touch_ts = touchTs;
+            eventData.@event.attribution_source = attributionSource;
+            eventData.@event.attribution_method = attributionMethod;
             
             // App version tracking
             eventData.@event.app_version_updated = GetAppVersionUpdated();
@@ -842,7 +845,7 @@ namespace BoostOps.Analytics
             return "ios";
 #elif UNITY_ANDROID
             return "android";
-#elif UNITY_STANDALONE_WIN
+#elif UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT
             return "windows";
 #elif UNITY_STANDALONE_OSX
             return "macos";
@@ -1139,13 +1142,13 @@ namespace BoostOps.Analytics
                 return false;
                 #elif UNITY_ANDROID && !UNITY_EDITOR
                 // Android: Check Intent extras for notification data
+                // Dispose every AndroidJavaObject (leaked JNI global refs
+                // accumulate and can exhaust the JNI reference table)
                 using (AndroidJavaClass unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (AndroidJavaObject currentActivity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                using (AndroidJavaObject intent = currentActivity.Call<AndroidJavaObject>("getIntent"))
+                using (AndroidJavaObject extras = intent.Call<AndroidJavaObject>("getExtras"))
                 {
-                    AndroidJavaObject currentActivity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
-                    AndroidJavaObject intent = currentActivity.Call<AndroidJavaObject>("getIntent");
-                    
-                    // Check if intent has notification extras
-                    AndroidJavaObject extras = intent.Call<AndroidJavaObject>("getExtras");
                     if (extras != null)
                     {
                         // Common notification extra keys

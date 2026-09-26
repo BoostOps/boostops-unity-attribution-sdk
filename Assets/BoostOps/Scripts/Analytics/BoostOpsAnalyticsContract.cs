@@ -265,7 +265,8 @@ namespace BoostOps
         /// </summary>
         private static void TrackFirstSessionToBoostOpsDirectly(string launchType, string deeplinkUrl, bool? organic, bool? reinstall, bool forceManagedMode = false,
             string attributionChannel = null, string attributionCampaignSlug = null, string attributionCampaign = null,
-            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null)
+            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null,
+            string attributionSource = null, string attributionMethod = null)
         {
             // DEBUG: Record this call for double-send detection
             BoostOps.Internal.AppOpenEventDebugger.RecordCall(launchType, true, "TrackFirstSessionToBoostOpsDirectly");
@@ -304,7 +305,8 @@ namespace BoostOps
                 // This should ONLY be called for the very first app launch after install
                 var appOpenEvent = BoostOpsEventBuilder.CreateAppOpenEvent(launchType, deeplinkUrl, isFirstSession: true, organic: organic, reinstall: reinstall,
                     attributionChannel: attributionChannel, attributionCampaignSlug: attributionCampaignSlug, attributionCampaign: attributionCampaign,
-                    isReengagement: isReengagement, attributionModel: attributionModel, touchType: touchType, touchTs: touchTs);
+                    isReengagement: isReengagement, attributionModel: attributionModel, touchType: touchType, touchTs: touchTs,
+                    attributionSource: attributionSource, attributionMethod: attributionMethod);
                 
                 // Verify first_open is true (critical install attribution field)
                 if (appOpenEvent.@event.first_open != true)
@@ -340,7 +342,8 @@ namespace BoostOps
         /// </summary>
         private static void TrackRegularSessionToBoostOpsDirectly(string launchType, string deeplinkUrl, bool forceManagedMode = false,
             string attributionChannel = null, string attributionCampaignSlug = null, string attributionCampaign = null,
-            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null)
+            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null,
+            string attributionSource = null, string attributionMethod = null)
         {
             // DEBUG: Record this call for double-send detection
             BoostOps.Internal.AppOpenEventDebugger.RecordCall(launchType, false, "TrackRegularSessionToBoostOpsDirectly");
@@ -379,7 +382,8 @@ namespace BoostOps
                 // This ensures backend never sees first_open=true for non-install sessions
                 var appOpenEvent = BoostOpsEventBuilder.CreateAppOpenEvent(launchType, deeplinkUrl, isFirstSession: false,
                     attributionChannel: attributionChannel, attributionCampaignSlug: attributionCampaignSlug, attributionCampaign: attributionCampaign,
-                    isReengagement: isReengagement, attributionModel: attributionModel, touchType: touchType, touchTs: touchTs);
+                    isReengagement: isReengagement, attributionModel: attributionModel, touchType: touchType, touchTs: touchTs,
+                    attributionSource: attributionSource, attributionMethod: attributionMethod);
                 
                 // Double-check first_open is false (safety check for critical field)
                 if (appOpenEvent.@event.first_open != false)
@@ -500,7 +504,8 @@ namespace BoostOps
         public static void TrackAppOpen(string sessionId = null, string launchType = "cold", 
             string deeplinkUrl = null, bool? isFirstSession = null, bool? organic = null, bool? reinstall = null, bool forceManagedMode = false,
             string attributionChannel = null, string attributionCampaignSlug = null, string attributionCampaign = null,
-            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null)
+            bool? isReengagement = null, string attributionModel = null, string touchType = null, long? touchTs = null,
+            string attributionSource = null, string attributionMethod = null)
         {
             // DEBUG: Record this call for double-send detection
             BoostOps.Internal.AppOpenEventDebugger.RecordCall(launchType, isFirstSession, "TrackAppOpen");
@@ -514,13 +519,15 @@ namespace BoostOps
             {
                 // CRITICAL: Send to BoostOps Analytics immediately using hardcoded endpoint for first session
                 TrackFirstSessionToBoostOpsDirectly(launchType, deeplinkUrl, organic, reinstall, forceManagedMode, 
-                    attributionChannel, attributionCampaignSlug, attributionCampaign, isReengagement, attributionModel, touchType, touchTs);
+                    attributionChannel, attributionCampaignSlug, attributionCampaign, isReengagement, attributionModel, touchType, touchTs,
+                    attributionSource, attributionMethod);
             }
             else
             {
                 // Regular app open - also send directly to BoostOps for reliability (same as first session but without install attribution)
                 TrackRegularSessionToBoostOpsDirectly(launchType, deeplinkUrl, forceManagedMode,
-                    attributionChannel, attributionCampaignSlug, attributionCampaign, isReengagement, attributionModel, touchType, touchTs);
+                    attributionChannel, attributionCampaignSlug, attributionCampaign, isReengagement, attributionModel, touchType, touchTs,
+                    attributionSource, attributionMethod);
             }
             
             // Also send to other providers (Firebase, Unity Analytics) for regular sessions

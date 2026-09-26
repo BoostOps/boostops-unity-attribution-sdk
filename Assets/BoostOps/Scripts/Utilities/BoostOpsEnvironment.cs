@@ -29,6 +29,7 @@ namespace BoostOps
         /// iOS: "production", "testflight", "development", "simulator", "adhoc"
         /// Android: "google_play"
         /// macOS: "macos_production" or "standalone"
+        /// Windows: "microsoft_store" (UWP or Store-signed MSIX) or "standalone"
         /// Editor: "editor"
         /// </returns>
         public static string GetEnvironment()
@@ -54,6 +55,12 @@ namespace BoostOps
                 // If we can't check, assume standalone
             }
             return "standalone";  // Direct download or other distribution
+            #elif UNITY_WSA || UNITY_STANDALONE_WIN
+            // UWP and Store-signed MSIX builds report "microsoft_store"; bare .exe and
+            // sideloaded MSIX fall through to "standalone". The check is gated inside
+            // BoostOpsMicrosoftStoreCampaign so it returns false on builds without
+            // the Microsoft.Windows.SDK.Contracts NuGet + ENABLE_WINMD_SUPPORT.
+            return BoostOpsMicrosoftStoreCampaign.IsMicrosoftStoreInstall() ? "microsoft_store" : "standalone";
             #else
             return "unknown";
             #endif
@@ -61,12 +68,12 @@ namespace BoostOps
         
         /// <summary>
         /// Check if running in a production environment
-        /// (App Store or Google Play release build)
+        /// (App Store, Google Play, Mac App Store, or Microsoft Store release build)
         /// </summary>
         public static bool IsProduction()
         {
             string env = GetEnvironment();
-            return env == "production" || env == "google_play" || env == "macos_production";
+            return env == "production" || env == "google_play" || env == "macos_production" || env == "microsoft_store";
         }
         
         /// <summary>
@@ -167,6 +174,8 @@ namespace BoostOps
                 // If we can't check, assume standalone
             }
             return "standalone";  // Direct download or other distribution
+            #elif UNITY_WSA || UNITY_STANDALONE_WIN
+            return BoostOpsMicrosoftStoreCampaign.IsMicrosoftStoreInstall() ? "microsoft_store" : "standalone";
             #elif UNITY_EDITOR
             return "editor";
             #else
@@ -194,6 +203,22 @@ namespace BoostOps
             #if UNITY_ANDROID
             string installer = GetInstallerSource();
             return installer == "sideload" || installer == "unknown";
+            #elif UNITY_WSA || UNITY_STANDALONE_WIN
+            // Anything not signed by the Microsoft Store on Windows is effectively
+            // sideloaded — bare .exe, dev-signed MSIX, enterprise sideload, etc.
+            return !BoostOpsMicrosoftStoreCampaign.IsMicrosoftStoreInstall();
+            #else
+            return false;
+            #endif
+        }
+
+        /// <summary>
+        /// Check if installed from the Microsoft Store (Windows: UWP or Store-signed MSIX)
+        /// </summary>
+        public static bool IsMicrosoftStoreInstall()
+        {
+            #if UNITY_WSA || UNITY_STANDALONE_WIN
+            return BoostOpsMicrosoftStoreCampaign.IsMicrosoftStoreInstall();
             #else
             return false;
             #endif

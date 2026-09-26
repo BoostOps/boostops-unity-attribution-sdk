@@ -139,6 +139,10 @@ namespace BoostOps
             );
 
             // Open the store URL directly (no need to regenerate it)
+#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
+            // Safety net: launch the Microsoft Store app (protocol link) instead of the browser.
+            storeUrl = BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(storeUrl, null) ?? storeUrl;
+#endif
             Debug.Log($"[BoostOps CrossPromo] Opening store: {storeUrl}");
             Application.OpenURL(storeUrl);
         }

@@ -18,6 +18,25 @@ namespace BoostOps
         // --- Cached Identifiers ---
         private static string _cachedInstallId;
         
+        // Whether Init() has run at least once this session (guards one-time
+        // work like session ID generation against repeated Init() calls)
+        private static bool _initStarted;
+        
+        /// <summary>
+        /// Reset static state at subsystem registration. Required for correct
+        /// behavior when "Enter Play Mode Options → Reload Domain" is disabled
+        /// in the Unity Editor — otherwise statics survive between play
+        /// sessions and the SDK skips (re)initialization.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStaticState()
+        {
+            _internal = null;
+            _cachedInstallId = null;
+            _initStarted = false;
+            BoostOps.Internal.BoostOpsSDKInternal.ResetStaticState();
+        }
+        
         // --- Events (Forwarded from Internal Implementation) ---
         
         /// <summary>
@@ -158,10 +177,15 @@ namespace BoostOps
                 _cachedInstallId = BoostOpsIdentifierManager.GetInstallId();
             }
             
-            // Regenerate session ID for new app launch (cold start)
-            // This ensures each app launch gets a unique session ID
-            BoostOpsEventBuilder.RegenerateSessionId();
-            // BoostOpsLogger.LogDebug("SDK", "🆔 Generated new session ID for app launch");
+            // Generate a session ID for this app launch (cold start).
+            // IDEMPOTENCY: only on the first Init() call — repeated calls used
+            // to regenerate the session ID mid-session, splitting analytics
+            // sessions and (via the internal Init) firing duplicate app_open.
+            if (!_initStarted)
+            {
+                _initStarted = true;
+                BoostOpsEventBuilder.RegenerateSessionId();
+            }
             
             // BoostOpsLogger.LogDebug("SDK", "🔍 Reading project settings...");
             
@@ -559,6 +583,10 @@ namespace BoostOps
             
             // Open app store
             string storeUrl = promo.GetStoreUrl();
+#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
+            // Safety net: launch the Microsoft Store app (protocol link) instead of the browser.
+            storeUrl = BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(storeUrl, null) ?? storeUrl;
+#endif
             if (!string.IsNullOrEmpty(storeUrl))
             {
 #if UNITY_IOS && !UNITY_EDITOR
@@ -957,15 +985,12 @@ namespace BoostOps
         
         private static BoostOpsManager GetOrCreateManager()
         {
-            if (BoostOpsManager.Instance != null)
-                return BoostOpsManager.Instance;
-                
-            // Create BoostOpsManager GameObject at scene root when needed
-            Debug.Log("[BoostOpsSDK] Auto-creating BoostOpsManager GameObject at scene root");
-            var managerObject = new GameObject("BoostOpsManager");
-            var manager = managerObject.AddComponent<BoostOpsManager>();
-            UnityEngine.Object.DontDestroyOnLoad(managerObject);
-            return manager;
+            // BoostOpsManager.Instance already implements the full creation
+            // strategy (scene lookup → Resources prefab → programmatic
+            // fallback). Delegating keeps a single creation path — previously
+            // this method created a bare GameObject and silently bypassed the
+            // shipped prefab (and any customized prefab settings on it).
+            return BoostOpsManager.Instance;
         }
         
         // Event subscription is now handled automatically through custom add/remove accessors

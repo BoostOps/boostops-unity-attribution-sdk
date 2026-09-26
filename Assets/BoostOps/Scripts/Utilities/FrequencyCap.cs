@@ -84,24 +84,33 @@ namespace BoostOps.Core
             return $"freq_cap_{baseKey}_{timeWindow}";
         }
 
-        // Get time window key for cache partitioning
+        // Stable identifier for the current app session. SESSION caps used to
+        // build the key from DateTime.Now.Ticks, which produced a *new* key on
+        // every call — the counter always read 0 and per-session caps never
+        // took effect.
+        private static readonly string SessionWindowId = Guid.NewGuid().ToString("N");
+
+        // Get time window key for cache partitioning.
+        // Uses UTC (and invariant culture) so window boundaries don't shift or
+        // reset when the user changes device timezone/locale — device clock
+        // manipulation shouldn't grant extra impressions.
         private string GetTimeWindowKey()
         {
-            DateTime now = DateTime.Now;
+            DateTime now = DateTime.UtcNow;
             switch (time_unit)
             {
                 case FrequencyCapTimeUnit.DAY:
                     return now.ToString("yyyy-MM-dd");
                 case FrequencyCapTimeUnit.WEEK:
                     // ISO week (Monday start)
-                    int weekOfYear = System.Globalization.CultureInfo.CurrentCulture.Calendar.GetWeekOfYear(now, System.Globalization.CalendarWeekRule.FirstFourDayWeek, DayOfWeek.Monday);
+                    int weekOfYear = System.Globalization.CultureInfo.InvariantCulture.Calendar.GetWeekOfYear(now, System.Globalization.CalendarWeekRule.FirstFourDayWeek, DayOfWeek.Monday);
                     return $"{now.Year}-W{weekOfYear:D2}";
                 case FrequencyCapTimeUnit.MONTH:
                     return now.ToString("yyyy-MM");
                 case FrequencyCapTimeUnit.LIFETIME:
                     return "lifetime";
                 case FrequencyCapTimeUnit.SESSION:
-                    return $"session_{DateTime.Now.Ticks}"; // Unique per session
+                    return $"session_{SessionWindowId}";
                 default:
                     return now.ToString("yyyy-MM-dd");
             }

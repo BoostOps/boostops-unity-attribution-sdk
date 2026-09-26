@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -29,6 +30,12 @@ namespace BoostOps.Analytics
         
         private const string PRODUCTION_BASE_URL = "https://analytics.boostops.io";
         private const string DEVELOPMENT_BASE_URL = "https://analytics-dev.boostops.io";
+        private const string DEFAULT_EVENTS_URL = "https://analytics.boostops.io/v1/events";
+        
+        // Persisted-event queue (full payloads, survives process kill).
+        // Mirrors the retry-until-acked pattern used by BoostOpsPurchaseClient.
+        private const string EVENT_QUEUE_SUBDIR = "BoostOps/events";
+        private const int MAX_PERSISTED_EVENT_FILES = 200;
         
         private const int MAX_RETRY_ATTEMPTS = 3;
         private const float BASE_RETRY_DELAY = 1.0f;
@@ -126,8 +133,9 @@ namespace BoostOps.Analytics
             // Initialize immediately with project key from settings
             InitializeFromProjectSettings();
             
-            // Load any persisted offline events
-            LoadOfflineQueue();
+            // Remove the legacy lossy PlayerPrefs marker queue (replaced by
+            // file-based persistence; see Offline Queue Management region)
+            CleanupLegacyOfflineQueue();
         }
         
         /// <summary>
@@ -143,7 +151,7 @@ namespace BoostOps.Analytics
                     // Initialize with project key and default endpoint
                     // Remote config will determine if events are actually sent or discarded
                     _projectKey = settings.ProjectKey;
-                    _eventsUrl = "https://analytics.boostops.io/v1/events"; // Default endpoint
+                    _eventsUrl = DEFAULT_EVENTS_URL;
                     _isDevelopmentMode = false; // Not used anymore - JSON logging happens for all events
                 }
                 else
@@ -185,6 +193,15 @@ namespace BoostOps.Analytics
                 BoostOpsLogger.LogWarning("Analytics", "Project key format may be incorrect. Expected format: bo_{env}_{publicProjectId}_{randomSuffix}\nExample: bo_live_p7q9K2z_1f4ac6d8e7b3c2d1");
             }
             
+            // SECURITY: Only accept HTTPS endpoints on *.boostops.io. This guards
+            // against a compromised/misconfigured remote config (or any internal
+            // caller) redirecting events + project key to an arbitrary host.
+            if (!IsAllowedEndpointUrl(endpointUrl))
+            {
+                BoostOpsLogger.LogError("Analytics", $"Rejected endpoint URL '{endpointUrl}' (must be https:// on a boostops.io host). Keeping '{DEFAULT_EVENTS_URL}'.");
+                endpointUrl = DEFAULT_EVENTS_URL;
+            }
+            
             _projectKey = projectKey;
             _eventsUrl = endpointUrl; // Full endpoint URL (e.g., https://analytics.boostops.io/v1/events)
             _isDevelopmentMode = isDevelopmentMode;
@@ -202,17 +219,31 @@ namespace BoostOps.Analytics
             // Load any persisted analytics disable state from previous sessions
             LoadPersistedAnalyticsState();
             
-            // Fresh initialization = fresh start. Clear any persisted disabled state
-            // so the server gets another chance. If it 403s again, it will re-disable.
+            // Honor a server-side kill switch (403/410) across restarts, but
+            // re-probe once per 24h so the server can re-enable the project
+            // without requiring an app update.
             if (_isAnalyticsDisabled)
             {
-                Debug.LogWarning($"[BoostOps Analytics] 🔄 Clearing stale disabled state from previous session (was: {_disableReason}). Server will be retried.");
-                ClearBackoff();
+                var disabledAt = LoadDisabledAtUtc();
+                if (disabledAt == null || (System.DateTime.UtcNow - disabledAt.Value) >= System.TimeSpan.FromHours(24))
+                {
+                    BoostOpsLogger.LogWarning("Analytics", $"🔄 Re-probing server after disable (was: {_disableReason}).");
+                    ClearBackoff();
+                }
+                else
+                {
+                    BoostOpsLogger.LogWarning("Analytics", $"⛔ Analytics remains disabled from previous session ({_disableReason}). Next re-probe: {disabledAt.Value.AddHours(24):u}");
+                }
             }
-            Debug.Log($"[BoostOps Analytics] 🔧 State after init: disabled={_isAnalyticsDisabled}, backoffUntil={_backoffUntil:u}, reason={_disableReason ?? "none"}, endpoint={_eventsUrl}");
+            BoostOpsLogger.LogDebug("Analytics", $"🔧 State after init: disabled={_isAnalyticsDisabled}, backoffUntil={_backoffUntil:u}, reason={_disableReason ?? "none"}, endpoint={_eventsUrl}");
             
             // Start batch processing with coroutine (consolidated threading pattern)
             StartBatchProcessing();
+            
+            // Replay any events persisted from previous sessions (crash / kill
+            // while offline). Delayed slightly so startup isn't impacted.
+            StartCoroutineRunner();
+            _coroutineRunner.StartCoroutine(ReplayPersistedEventsAfterDelay(5f));
         }
         
         /// <summary>
@@ -313,6 +344,66 @@ namespace BoostOps.Analytics
             // Example: bo_live_p7q9K2z_1f4ac6d8e7b3c2d1
             var regex = new System.Text.RegularExpressions.Regex(@"^bo_(live|test|dev)_[A-Za-z0-9]{7}_[A-Fa-f0-9]{16}$");
             return regex.IsMatch(projectKey);
+        }
+        
+        /// <summary>
+        /// Endpoint allowlist: HTTPS only, and the host must be boostops.io or
+        /// a subdomain of it. Applied to every endpoint override (constructor
+        /// default, Initialize() callers, remote config, server responses).
+        /// </summary>
+        internal static bool IsAllowedEndpointUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+                return false;
+            
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                return false;
+            
+            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+                return false;
+            
+            var host = uri.Host;
+            return string.Equals(host, "boostops.io", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".boostops.io", StringComparison.OrdinalIgnoreCase);
+        }
+        
+        /// <summary>
+        /// The current instance if one exists, without creating one.
+        /// Used by lifecycle hooks that must not construct the client.
+        /// </summary>
+        internal static BoostOpsAnalyticsClient ExistingInstance => _instance;
+        
+        /// <summary>
+        /// Drop the singleton so the next access builds a fresh client.
+        /// Needed when domain reload is disabled — the old instance holds a
+        /// destroyed CoroutineRunner and a stale queue from the last session.
+        /// </summary>
+        internal static void ResetStaticState()
+        {
+            lock (_lockObject)
+            {
+                _instance = null;
+                _lastAppOpenTime = 0f;
+            }
+        }
+        
+        /// <summary>
+        /// Apply a server-driven endpoint override (from a batch response).
+        /// Subject to the same HTTPS + boostops.io allowlist as Initialize().
+        /// </summary>
+        internal void UpdateEndpoint(string endpointUrl)
+        {
+            if (string.IsNullOrEmpty(endpointUrl) || endpointUrl == _eventsUrl)
+                return;
+            
+            if (!IsAllowedEndpointUrl(endpointUrl))
+            {
+                BoostOpsLogger.LogWarning("Analytics", $"Ignoring server endpoint override '{endpointUrl}' (must be https:// on a boostops.io host)");
+                return;
+            }
+            
+            BoostOpsLogger.LogInfo("Analytics", $"🔀 Server endpoint override applied: {endpointUrl}");
+            _eventsUrl = endpointUrl;
         }
         
         /// <summary>
@@ -540,7 +631,9 @@ namespace BoostOps.Analytics
                 jsonData = "{\"events\":[" + string.Join(",", cleanJsonEvents) + "]}";
                 
                 var eventTypes = string.Join(", ", events.Select(e => e.event_type));
-                Debug.Log($"[BoostOps Analytics] 📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
+                // PRIVACY: full payloads (identifiers, receipts, deep links) are
+                // only logged when runtime debug logging is explicitly enabled.
+                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
                 
                 request = CreatePostRequest(url, jsonData);
             }
@@ -558,8 +651,13 @@ namespace BoostOps.Analytics
                 var responseBody = request.downloadHandler?.text ?? "(empty)";
                 if (request.result == UnityWebRequest.Result.Success)
                 {
-                    Debug.Log($"[BoostOps Analytics] ✅ {request.responseCode} Response: {responseBody}");
+                    BoostOpsLogger.LogDebug("Analytics", $"✅ {request.responseCode} Response: {responseBody}");
+                    // Apply server config (kill switch, schemas, endpoint) on the
+                    // background batch path too — previously only the explicit
+                    // flush path honored these.
+                    ApplyServerConfigFromResponse(responseBody);
                     HandleServerResponse(request.responseCode, request.downloadHandler?.text);
+                    DeletePersistedEvents(events);
                     onResult?.Invoke((true, false));
                 }
                 else
@@ -635,7 +733,9 @@ namespace BoostOps.Analytics
                 jsonData = "{\"events\":[" + string.Join(",", cleanJsonEvents) + "]}";
                 
                 var eventTypes = string.Join(", ", events.Select(e => e.event_type));
-                Debug.Log($"[BoostOps Analytics] 📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
+                // PRIVACY: full payloads (identifiers, receipts, deep links) are
+                // only logged when runtime debug logging is explicitly enabled.
+                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
                 
                 request = CreatePostRequest(url, jsonData);
             }
@@ -652,7 +752,7 @@ namespace BoostOps.Analytics
                 var responseBody = request.downloadHandler?.text ?? "(empty)";
                 if (request.result == UnityWebRequest.Result.Success)
                 {
-                    Debug.Log($"[BoostOps Analytics] ✅ {request.responseCode} Response: {responseBody}");
+                    BoostOpsLogger.LogDebug("Analytics", $"✅ {request.responseCode} Response: {responseBody}");
                 }
                 else
                 {
@@ -702,7 +802,9 @@ namespace BoostOps.Analytics
                 jsonData = "{\"events\":[" + string.Join(",", cleanJsonEvents) + "]}";
                 
                 var eventTypes = string.Join(", ", events.Select(e => e.event_type));
-                Debug.Log($"[BoostOps Analytics] 📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
+                // PRIVACY: full payloads (identifiers, receipts, deep links) are
+                // only logged when runtime debug logging is explicitly enabled.
+                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
                 
                 request = CreatePostRequest(url, jsonData);
             }
@@ -724,42 +826,14 @@ namespace BoostOps.Analytics
                     try
                     {
                         string rawResponse = request.downloadHandler.text;
-                        Debug.Log($"[BoostOps Analytics] ✅ {request.responseCode} Response: {rawResponse}");
+                        BoostOpsLogger.LogDebug("Analytics", $"✅ {request.responseCode} Response: {rawResponse}");
                         
-                        var response = JsonUtility.FromJson<AnalyticsBatchResponse>(rawResponse);
-                        
-                        // CRITICAL: Apply server config (kill switch, schemas, endpoint)
-                        if (response != null)
-                        {
-                            // Update accepted schema versions
-                            if (response.accepted_schema_major != null && response.accepted_schema_major.Length > 0)
-                            {
-                                SetAcceptedSchemaVersions(response.accepted_schema_major);
-                            }
-                            
-                            // Update schema enforcement flag (fail-open strategy)
-                            // Only enforce if server explicitly sets it to true
-                            bool previousEnforcement = _enforceSchemaValidation;
-                            _enforceSchemaValidation = response.enforce_schema_validation;
-                            
-                            // Only log when enforcement mode actually changes
-                            if (_enforceSchemaValidation != previousEnforcement)
-                            {
-                                string mode = _enforceSchemaValidation ? "STRICT (blocking unsupported schemas)" : "PERMISSIVE (warn only)";
-                                BoostOpsLogger.LogInfo("Analytics", $"📋 Schema validation mode changed: {mode}");
-                            }
-                            
-                            // ✅ APPLY SERVER CONFIG (kill switch, schemas, endpoint)
-                            // Note: disabled=true means kill switch ON (analytics disabled)
-                            BoostOpsAnalyticsProvider.ApplyServerConfig(
-                                disabled: response.disabled,
-                                acceptedSchemas: response.accepted_schema_major,
-                                endpoint: response.endpoint
-                            );
-                        }
+                        var response = ApplyServerConfigFromResponse(rawResponse);
                         
                         // Handle server response for analytics control
                         HandleServerResponse(request.responseCode, request.downloadHandler?.text);
+                        
+                        DeletePersistedEvents(events);
                         
                         SafeInvokeCallback(() => onComplete?.Invoke(true, response));
                     }
@@ -848,7 +922,7 @@ namespace BoostOps.Analytics
             
             // Queue the original event (cleaning happens during JSON serialization)
             _eventQueue.Enqueue(eventData);
-            Debug.Log($"[BoostOps Analytics] 📥 Queued: {eventData.event_type} | queue size: {_eventQueue.Count} | endpoint: {_eventsUrl}");
+            BoostOpsLogger.LogDebug("Analytics", $"📥 Queued: {eventData.event_type} | queue size: {_eventQueue.Count} | endpoint: {_eventsUrl}");
         }
         
         /// <summary>
@@ -859,7 +933,7 @@ namespace BoostOps.Analytics
         {
             if (_eventQueue.Count == 0)
             {
-                Debug.Log("[BoostOps Analytics] 🚿 FlushQueue called but queue is empty");
+                BoostOpsLogger.LogDebug("Analytics", "🚿 FlushQueue called but queue is empty");
                 onComplete?.Invoke(true);
                 return;
             }
@@ -871,13 +945,13 @@ namespace BoostOps.Analytics
             }
             
             var eventTypes = string.Join(", ", eventsToSend.Select(e => e.event_type));
-            Debug.Log($"[BoostOps Analytics] 🚿 Flushing {eventsToSend.Count} event(s): [{eventTypes}]");
+            BoostOpsLogger.LogDebug("Analytics", $"🚿 Flushing {eventsToSend.Count} event(s): [{eventTypes}]");
             
             SendEventsBatch(eventsToSend, (success, response) =>
             {
                 if (success)
                 {
-                    Debug.Log($"[BoostOps Analytics] 🚿 Flush complete - {eventsToSend.Count} event(s) sent successfully");
+                    BoostOpsLogger.LogDebug("Analytics", $"🚿 Flush complete - {eventsToSend.Count} event(s) sent successfully");
                 }
                 else
                 {
@@ -967,6 +1041,26 @@ namespace BoostOps.Analytics
 
         
         /// <summary>
+        /// JSON-escaped "key":"value" pair. Alias for the shared serializer's
+        /// helper so every string field in hand-built payloads is escaped —
+        /// deep links, campaign slugs, custom user IDs etc. can contain
+        /// quotes/backslashes that would otherwise corrupt the payload.
+        /// </summary>
+        private static string S(string key, string value) => BoostOpsCommonPayloadJson.StrField(key, value);
+        
+        /// <summary>
+        /// JSON-escape a dynamic key (e.g. app wall item dictionary keys).
+        /// Static field names don't need this; dynamic ones do.
+        /// </summary>
+        private static string EscapeJsonKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return key ?? "";
+            var sb = new StringBuilder(key.Length + 4);
+            BoostOpsCommonPayloadJson.JsonEscape(sb, key);
+            return sb.ToString();
+        }
+        
+        /// <summary>
         /// Create clean JSON string that excludes empty/null fields (Unity JsonUtility includes all fields)
         /// </summary>
         private string CreateCleanJsonString(AnalyticsEventData eventData)
@@ -976,7 +1070,7 @@ namespace BoostOps.Analytics
             var jsonParts = new List<string>();
             
             // Always include event_type
-            jsonParts.Add($"\"event_type\":\"{eventData.event_type}\"");
+            jsonParts.Add(S("event_type", eventData.event_type));
             
             // Always include schema_version for safe evolution
             jsonParts.Add($"\"schema_version\":{eventData.schema_version}");
@@ -993,24 +1087,24 @@ namespace BoostOps.Analytics
             // Always include event_id for database UNIQUE INDEX (source_project_id, event_id)
             if (!string.IsNullOrEmpty(eventData.event_id))
             {
-                jsonParts.Add($"\"event_id\":\"{eventData.event_id}\"");
+                jsonParts.Add(S("event_id", eventData.event_id));
             }
             
             // Always include nonce for network replay attack prevention (fresh nonce per attempt)
             if (!string.IsNullOrEmpty(eventData.nonce))
             {
-                jsonParts.Add($"\"nonce\":\"{eventData.nonce}\"");
+                jsonParts.Add(S("nonce", eventData.nonce));
             }
             
             // Four-tier ID hierarchy (schema v6)
             if (!string.IsNullOrEmpty(eventData.boostops_id))
             {
-                jsonParts.Add($"\"boostops_id\":\"{eventData.boostops_id}\"");
+                jsonParts.Add(S("boostops_id", eventData.boostops_id));
             }
             
             if (!string.IsNullOrEmpty(eventData.install_id))
             {
-                jsonParts.Add($"\"install_id\":\"{eventData.install_id}\"");
+                jsonParts.Add(S("install_id", eventData.install_id));
             }
             
             if (eventData.install_time_ms.HasValue && eventData.install_time_ms.Value > 0)
@@ -1020,12 +1114,12 @@ namespace BoostOps.Analytics
             
             if (!string.IsNullOrEmpty(eventData.custom_user_id))
             {
-                jsonParts.Add($"\"custom_user_id\":\"{eventData.custom_user_id}\"");
+                jsonParts.Add(S("custom_user_id", eventData.custom_user_id));
             }
             
             if (!string.IsNullOrEmpty(eventData.session_id))
             {
-                jsonParts.Add($"\"session_id\":\"{eventData.session_id}\"");
+                jsonParts.Add(S("session_id", eventData.session_id));
             }
             
             // TOP-LEVEL: Critical routing flags (determines which Bronze table to use)
@@ -1108,73 +1202,69 @@ namespace BoostOps.Analytics
             
             // Attribution & Identity
             // Note: boostops_id and session_id moved to top-level, no longer in event data
-            if (!string.IsNullOrEmpty(eventData.user_id)) eventParts.Add($"\"user_id\":\"{eventData.user_id}\"");
+            if (!string.IsNullOrEmpty(eventData.user_id)) eventParts.Add(S("user_id", eventData.user_id));
             
             // Cross-Promotion Attribution
             // Note: source_store_id is in context.store_id (universal) - not duplicated here
             // Note: source_project_id is derived server-side from project_key (not sent from SDK)
-            if (!string.IsNullOrEmpty(eventData.target_store_id)) eventParts.Add($"\"target_store_id\":\"{eventData.target_store_id}\"");
-            if (!string.IsNullOrEmpty(eventData.target_project_id)) eventParts.Add($"\"target_project_id\":\"{eventData.target_project_id}\"");
-            if (!string.IsNullOrEmpty(eventData.network_campaign_id)) eventParts.Add($"\"network_campaign_id\":\"{eventData.network_campaign_id}\"");
-            if (!string.IsNullOrEmpty(eventData.placement_id)) eventParts.Add($"\"placement_id\":\"{eventData.placement_id}\"");
+            if (!string.IsNullOrEmpty(eventData.target_store_id)) eventParts.Add(S("target_store_id", eventData.target_store_id));
+            if (!string.IsNullOrEmpty(eventData.target_project_id)) eventParts.Add(S("target_project_id", eventData.target_project_id));
+            if (!string.IsNullOrEmpty(eventData.network_campaign_id)) eventParts.Add(S("network_campaign_id", eventData.network_campaign_id));
+            if (!string.IsNullOrEmpty(eventData.placement_id)) eventParts.Add(S("placement_id", eventData.placement_id));
             
             // Campaign attribution  
             if (eventData.campaign_id.HasValue) eventParts.Add($"\"campaign_id\":{eventData.campaign_id}");
-            if (!string.IsNullOrEmpty(eventData.campaign_slug)) eventParts.Add($"\"campaign_slug\":\"{eventData.campaign_slug}\"");
+            if (!string.IsNullOrEmpty(eventData.campaign_slug)) eventParts.Add(S("campaign_slug", eventData.campaign_slug));
             if (eventData.creative_id.HasValue) eventParts.Add($"\"creative_id\":{eventData.creative_id}");
-            if (!string.IsNullOrEmpty(eventData.keyword)) eventParts.Add($"\"keyword\":\"{eventData.keyword}\"");
+            if (!string.IsNullOrEmpty(eventData.keyword)) eventParts.Add(S("keyword", eventData.keyword));
             
             // App context
-            if (!string.IsNullOrEmpty(eventData.project_slug)) eventParts.Add($"\"project_slug\":\"{eventData.project_slug}\"");
+            if (!string.IsNullOrEmpty(eventData.project_slug)) eventParts.Add(S("project_slug", eventData.project_slug));
             
             // Revenue & Commerce
-            if (!string.IsNullOrEmpty(eventData.currency)) eventParts.Add($"\"currency\":\"{eventData.currency}\"");
+            if (!string.IsNullOrEmpty(eventData.currency)) eventParts.Add(S("currency", eventData.currency));
             if (eventData.amount_micros.HasValue) eventParts.Add($"\"amount_micros\":{eventData.amount_micros}");
             if (eventData.tax_micros.HasValue) eventParts.Add($"\"tax_micros\":{eventData.tax_micros}");
             if (eventData.discount_micros.HasValue) eventParts.Add($"\"discount_micros\":{eventData.discount_micros}");
             
             // Product details
-            if (!string.IsNullOrEmpty(eventData.product_id)) eventParts.Add($"\"product_id\":\"{eventData.product_id}\"");
-            if (!string.IsNullOrEmpty(eventData.product_name)) eventParts.Add($"\"product_name\":\"{eventData.product_name}\"");
-            if (!string.IsNullOrEmpty(eventData.product_category)) eventParts.Add($"\"product_category\":\"{eventData.product_category}\"");
+            if (!string.IsNullOrEmpty(eventData.product_id)) eventParts.Add(S("product_id", eventData.product_id));
+            if (!string.IsNullOrEmpty(eventData.product_name)) eventParts.Add(S("product_name", eventData.product_name));
+            if (!string.IsNullOrEmpty(eventData.product_category)) eventParts.Add(S("product_category", eventData.product_category));
             if (eventData.quantity.HasValue) eventParts.Add($"\"quantity\":{eventData.quantity}");
-            if (!string.IsNullOrEmpty(eventData.transaction_id)) eventParts.Add($"\"transaction_id\":\"{eventData.transaction_id}\"");
-            if (!string.IsNullOrEmpty(eventData.receipt))
-            {
-                var escapedReceipt = eventData.receipt.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
-                eventParts.Add($"\"receipt\":\"{escapedReceipt}\"");
-            }
+            if (!string.IsNullOrEmpty(eventData.transaction_id)) eventParts.Add(S("transaction_id", eventData.transaction_id));
+            if (!string.IsNullOrEmpty(eventData.receipt)) eventParts.Add(S("receipt", eventData.receipt));
             
             // Commerce context
             if (eventData.is_trial.HasValue) eventParts.Add($"\"is_trial\":{(eventData.is_trial.Value ? "true" : "false")}");
             if (eventData.is_subscription.HasValue) eventParts.Add($"\"is_subscription\":{(eventData.is_subscription.Value ? "true" : "false")}");
-            if (!string.IsNullOrEmpty(eventData.billing_period)) eventParts.Add($"\"billing_period\":\"{eventData.billing_period}\"");
+            if (!string.IsNullOrEmpty(eventData.billing_period)) eventParts.Add(S("billing_period", eventData.billing_period));
             if (eventData.renewal_number.HasValue) eventParts.Add($"\"renewal_number\":{eventData.renewal_number}");
             
             // Cross-promotion specific
-            if (!string.IsNullOrEmpty(eventData.format)) eventParts.Add($"\"format\":\"{eventData.format}\"");
-            if (!string.IsNullOrEmpty(eventData.channel)) eventParts.Add($"\"channel\":\"{eventData.channel}\"");
+            if (!string.IsNullOrEmpty(eventData.format)) eventParts.Add(S("format", eventData.format));
+            if (!string.IsNullOrEmpty(eventData.channel)) eventParts.Add(S("channel", eventData.channel));
             if (eventData.duration_ms.HasValue) eventParts.Add($"\"duration_ms\":{eventData.duration_ms}");
             if (eventData.viewable.HasValue) eventParts.Add($"\"viewable\":{(eventData.viewable.Value ? "true" : "false")}");
             if (eventData.above_fold.HasValue) eventParts.Add($"\"above_fold\":{(eventData.above_fold.Value ? "true" : "false")}");
             if (eventData.completion_rate.HasValue) eventParts.Add($"\"completion_rate\":{eventData.completion_rate}");
             
             // Impression ↔ Click linkage (industry standard)
-            if (!string.IsNullOrEmpty(eventData.impression_id)) eventParts.Add($"\"impression_id\":\"{eventData.impression_id}\"");
+            if (!string.IsNullOrEmpty(eventData.impression_id)) eventParts.Add(S("impression_id", eventData.impression_id));
             if (eventData.impression_timestamp.HasValue) eventParts.Add($"\"impression_timestamp\":{eventData.impression_timestamp}");
-            if (!string.IsNullOrEmpty(eventData.container_impression_id)) eventParts.Add($"\"container_impression_id\":\"{eventData.container_impression_id}\"");
+            if (!string.IsNullOrEmpty(eventData.container_impression_id)) eventParts.Add(S("container_impression_id", eventData.container_impression_id));
             
             // Click specific (only include coordinates if not 0,0)
             if (eventData.click_coordinates != null && (eventData.click_coordinates.x != 0 || eventData.click_coordinates.y != 0))
                 eventParts.Add($"\"click_coordinates\":{{\"x\":{eventData.click_coordinates.x},\"y\":{eventData.click_coordinates.y}}}");
             if (eventData.time_to_click_ms.HasValue) eventParts.Add($"\"time_to_click_ms\":{eventData.time_to_click_ms}");
-            if (!string.IsNullOrEmpty(eventData.click_id)) eventParts.Add($"\"click_id\":\"{eventData.click_id}\"");
-            if (!string.IsNullOrEmpty(eventData.referrer)) eventParts.Add($"\"referrer\":\"{eventData.referrer}\"");
+            if (!string.IsNullOrEmpty(eventData.click_id)) eventParts.Add(S("click_id", eventData.click_id));
+            if (!string.IsNullOrEmpty(eventData.referrer)) eventParts.Add(S("referrer", eventData.referrer));
             if (eventData.click_through_rate.HasValue) eventParts.Add($"\"click_through_rate\":{eventData.click_through_rate}");
             
             // Cross-App Navigation
-            if (!string.IsNullOrEmpty(eventData.deep_link_url)) eventParts.Add($"\"deep_link_url\":\"{eventData.deep_link_url}\"");
-            if (!string.IsNullOrEmpty(eventData.redirect_url)) eventParts.Add($"\"redirect_url\":\"{eventData.redirect_url}\"");
+            if (!string.IsNullOrEmpty(eventData.deep_link_url)) eventParts.Add(S("deep_link_url", eventData.deep_link_url));
+            if (!string.IsNullOrEmpty(eventData.redirect_url)) eventParts.Add(S("redirect_url", eventData.redirect_url));
             if (eventData.store_redirect.HasValue) eventParts.Add($"\"store_redirect\":{(eventData.store_redirect.Value ? "true" : "false")}");
             if (eventData.attribution_window_hours.HasValue) eventParts.Add($"\"attribution_window_hours\":{eventData.attribution_window_hours}");
             
@@ -1192,8 +1282,7 @@ namespace BoostOps.Analytics
             
             // App open specific
             if (eventData.first_open.HasValue) eventParts.Add($"\"first_open\":{(eventData.first_open.Value ? "true" : "false")}");
-            if (!string.IsNullOrEmpty(eventData.launch_type)) eventParts.Add($"\"launch_type\":\"{eventData.launch_type}\"");
-            if (!string.IsNullOrEmpty(eventData.deep_link_url)) eventParts.Add($"\"deep_link_url\":\"{eventData.deep_link_url}\"");
+            if (!string.IsNullOrEmpty(eventData.launch_type)) eventParts.Add(S("launch_type", eventData.launch_type));
             if (eventData.time_since_install_ms.HasValue) eventParts.Add($"\"time_since_install_ms\":{eventData.time_since_install_ms}");
             
             // Device identification fields (app open events)
@@ -1204,30 +1293,30 @@ namespace BoostOps.Analytics
             // Note: timezone_offset_minutes is in context (universal) - not duplicated here
             if (eventData.screen_width.HasValue) eventParts.Add($"\"screen_width\":{eventData.screen_width}");
             if (eventData.screen_height.HasValue) eventParts.Add($"\"screen_height\":{eventData.screen_height}");
-            if (!string.IsNullOrEmpty(eventData.device_orientation)) eventParts.Add($"\"device_orientation\":\"{eventData.device_orientation}\"");
+            if (!string.IsNullOrEmpty(eventData.device_orientation)) eventParts.Add(S("device_orientation", eventData.device_orientation));
             
             // Attribution update specific
-            if (!string.IsNullOrEmpty(eventData.attribution_source)) eventParts.Add($"\"attribution_source\":\"{eventData.attribution_source}\"");
-            if (!string.IsNullOrEmpty(eventData.attribution_method)) eventParts.Add($"\"attribution_method\":\"{eventData.attribution_method}\"");
+            if (!string.IsNullOrEmpty(eventData.attribution_source)) eventParts.Add(S("attribution_source", eventData.attribution_source));
+            if (!string.IsNullOrEmpty(eventData.attribution_method)) eventParts.Add(S("attribution_method", eventData.attribution_method));
             if (eventData.attribution_confidence.HasValue) eventParts.Add($"\"attribution_confidence\":{eventData.attribution_confidence}");
             
             // Install-time identifiers (first_open events only)
-            if (!string.IsNullOrEmpty(eventData.asa_token)) eventParts.Add($"\"asa_token\":\"{eventData.asa_token}\"");
-            if (!string.IsNullOrEmpty(eventData.skan_source_id)) eventParts.Add($"\"skan_source_id\":\"{eventData.skan_source_id}\"");
-            if (!string.IsNullOrEmpty(eventData.install_referrer_click_id)) eventParts.Add($"\"install_referrer_click_id\":\"{eventData.install_referrer_click_id}\"");
-            if (!string.IsNullOrEmpty(eventData.attribution_click_id)) eventParts.Add($"\"attribution_click_id\":\"{eventData.attribution_click_id}\"");
+            if (!string.IsNullOrEmpty(eventData.asa_token)) eventParts.Add(S("asa_token", eventData.asa_token));
+            if (!string.IsNullOrEmpty(eventData.skan_source_id)) eventParts.Add(S("skan_source_id", eventData.skan_source_id));
+            if (!string.IsNullOrEmpty(eventData.install_referrer_click_id)) eventParts.Add(S("install_referrer_click_id", eventData.install_referrer_click_id));
+            if (!string.IsNullOrEmpty(eventData.attribution_click_id)) eventParts.Add(S("attribution_click_id", eventData.attribution_click_id));
             
             // Google Play Install Referrer data (Android first_open events only)
             if (eventData.play_install_referrer != null && !string.IsNullOrEmpty(eventData.play_install_referrer.referrer))
             {
                 var referrerParts = new List<string>();
-                referrerParts.Add($"\"referrer\":\"{eventData.play_install_referrer.referrer}\"");
+                referrerParts.Add(S("referrer", eventData.play_install_referrer.referrer));
                 if (eventData.play_install_referrer.click_ts.HasValue) 
                     referrerParts.Add($"\"click_ts\":{eventData.play_install_referrer.click_ts.Value}");
                 if (eventData.play_install_referrer.install_begin_ts.HasValue) 
                     referrerParts.Add($"\"install_begin_ts\":{eventData.play_install_referrer.install_begin_ts.Value}");
                 if (!string.IsNullOrEmpty(eventData.play_install_referrer.click_id))
-                    referrerParts.Add($"\"click_id\":\"{eventData.play_install_referrer.click_id}\"");
+                    referrerParts.Add(S("click_id", eventData.play_install_referrer.click_id));
                 
                 eventParts.Add($"\"play_install_referrer\":{{{string.Join(",", referrerParts)}}}");
             }
@@ -1236,7 +1325,7 @@ namespace BoostOps.Analytics
             if (eventData.apple_search_ads != null && !string.IsNullOrEmpty(eventData.apple_search_ads.token))
             {
                 var asaParts = new List<string>();
-                asaParts.Add($"\"token\":\"{eventData.apple_search_ads.token}\"");
+                asaParts.Add(S("token", eventData.apple_search_ads.token));
                 if (eventData.apple_search_ads.campaign_id.HasValue)
                     asaParts.Add($"\"campaign_id\":{eventData.apple_search_ads.campaign_id.Value}");
                 if (eventData.apple_search_ads.ad_group_id.HasValue)
@@ -1253,15 +1342,15 @@ namespace BoostOps.Analytics
             if (eventData.skan != null && !string.IsNullOrEmpty(eventData.skan.version))
             {
                 var skanParts = new List<string>();
-                skanParts.Add($"\"version\":\"{eventData.skan.version}\"");
+                skanParts.Add(S("version", eventData.skan.version));
                 if (eventData.skan.postback_sequence.HasValue)
                     skanParts.Add($"\"postback_sequence\":{eventData.skan.postback_sequence.Value}");
                 if (eventData.skan.conversion_value.HasValue)
                     skanParts.Add($"\"conversion_value\":{eventData.skan.conversion_value.Value}");
                 if (!string.IsNullOrEmpty(eventData.skan.coarse_value))
-                    skanParts.Add($"\"coarse_value\":\"{eventData.skan.coarse_value}\"");
+                    skanParts.Add(S("coarse_value", eventData.skan.coarse_value));
                 if (!string.IsNullOrEmpty(eventData.skan.source_identifier))
-                    skanParts.Add($"\"source_identifier\":\"{eventData.skan.source_identifier}\"");
+                    skanParts.Add(S("source_identifier", eventData.skan.source_identifier));
                 if (eventData.skan.fidelity_type.HasValue)
                     skanParts.Add($"\"fidelity_type\":{eventData.skan.fidelity_type.Value}");
                 if (eventData.skan.lock_window.HasValue)
@@ -1271,7 +1360,7 @@ namespace BoostOps.Analytics
                 if (eventData.skan.campaign_id.HasValue)
                     skanParts.Add($"\"campaign_id\":{eventData.skan.campaign_id.Value}");
                 if (!string.IsNullOrEmpty(eventData.skan.attribution_signature))
-                    skanParts.Add($"\"attribution_signature\":\"{eventData.skan.attribution_signature}\"");
+                    skanParts.Add(S("attribution_signature", eventData.skan.attribution_signature));
                 if (eventData.skan.postback_timestamp.HasValue)
                     skanParts.Add($"\"postback_timestamp\":{eventData.skan.postback_timestamp.Value}");
                 
@@ -1282,9 +1371,9 @@ namespace BoostOps.Analytics
             if (eventData.aak != null && !string.IsNullOrEmpty(eventData.aak.conversion_type))
             {
                 var aakParts = new List<string>();
-                aakParts.Add($"\"conversion_type\":\"{eventData.aak.conversion_type}\"");
+                aakParts.Add(S("conversion_type", eventData.aak.conversion_type));
                 if (!string.IsNullOrEmpty(eventData.aak.marketplace_identifier))
-                    aakParts.Add($"\"marketplace_identifier\":\"{eventData.aak.marketplace_identifier}\"");
+                    aakParts.Add(S("marketplace_identifier", eventData.aak.marketplace_identifier));
                 if (eventData.aak.attribution_window.HasValue)
                     aakParts.Add($"\"attribution_window\":{eventData.aak.attribution_window.Value}");
                 if (eventData.aak.cooldown_window.HasValue)
@@ -1294,12 +1383,12 @@ namespace BoostOps.Analytics
             }
             
             // Device identifiers (hashed)
-            if (!string.IsNullOrEmpty(eventData.idfa_hash)) eventParts.Add($"\"idfa_hash\":\"{eventData.idfa_hash}\"");
-            if (!string.IsNullOrEmpty(eventData.idfv_hash)) eventParts.Add($"\"idfv_hash\":\"{eventData.idfv_hash}\"");
-            if (!string.IsNullOrEmpty(eventData.gaid_hash)) eventParts.Add($"\"gaid_hash\":\"{eventData.gaid_hash}\"");
-            if (!string.IsNullOrEmpty(eventData.android_id_hash)) eventParts.Add($"\"android_id_hash\":\"{eventData.android_id_hash}\"");
-            if (!string.IsNullOrEmpty(eventData.custom_user_id)) eventParts.Add($"\"custom_user_id\":\"{eventData.custom_user_id}\"");
-            if (!string.IsNullOrEmpty(eventData.fingerprint_hash)) eventParts.Add($"\"fingerprint_hash\":\"{eventData.fingerprint_hash}\"");
+            if (!string.IsNullOrEmpty(eventData.idfa_hash)) eventParts.Add(S("idfa_hash", eventData.idfa_hash));
+            if (!string.IsNullOrEmpty(eventData.idfv_hash)) eventParts.Add(S("idfv_hash", eventData.idfv_hash));
+            if (!string.IsNullOrEmpty(eventData.gaid_hash)) eventParts.Add(S("gaid_hash", eventData.gaid_hash));
+            if (!string.IsNullOrEmpty(eventData.android_id_hash)) eventParts.Add(S("android_id_hash", eventData.android_id_hash));
+            if (!string.IsNullOrEmpty(eventData.custom_user_id)) eventParts.Add(S("custom_user_id", eventData.custom_user_id));
+            if (!string.IsNullOrEmpty(eventData.fingerprint_hash)) eventParts.Add(S("fingerprint_hash", eventData.fingerprint_hash));
             
             // App Wall specific: Serialize items array (nested item impression data)
             if (eventData.items != null && eventData.items.Count > 0)
@@ -1317,21 +1406,18 @@ namespace BoostOps.Analytics
                             {
                                 if (kvp.Value is string strValue)
                                 {
-                                    // Escape quotes in string values
-                                    var escapedValue = strValue.Replace("\\", "\\\\").Replace("\"", "\\\"");
-                                    itemParts.Add($"\"{kvp.Key}\":\"{escapedValue}\"");
+                                    itemParts.Add(S(EscapeJsonKey(kvp.Key), strValue));
                                 }
                                 else if (kvp.Value is int || kvp.Value is long || kvp.Value is float || kvp.Value is double || kvp.Value is bool)
                                 {
                                     // Numeric and boolean values don't need quotes
                                     var valueStr = kvp.Value.ToString().ToLower(); // Lowercase for bool (true/false)
-                                    itemParts.Add($"\"{kvp.Key}\":{valueStr}");
+                                    itemParts.Add($"\"{EscapeJsonKey(kvp.Key)}\":{valueStr}");
                                 }
                                 else
                                 {
                                     // For other types, convert to string and quote
-                                    var valueStr = kvp.Value.ToString().Replace("\\", "\\\\").Replace("\"", "\\\"");
-                                    itemParts.Add($"\"{kvp.Key}\":\"{valueStr}\"");
+                                    itemParts.Add(S(EscapeJsonKey(kvp.Key), kvp.Value.ToString()));
                                 }
                             }
                         }
@@ -1391,6 +1477,60 @@ namespace BoostOps.Analytics
 
         
 
+        
+        /// <summary>
+        /// Parse a successful batch response and apply server-driven config
+        /// (accepted schemas, enforcement mode, kill switch, endpoint).
+        /// Shared by the flush path and the background batch path so queued
+        /// traffic honors server config too. Returns the parsed response
+        /// (or null if the body was empty/unparseable).
+        /// </summary>
+        private AnalyticsBatchResponse ApplyServerConfigFromResponse(string rawResponse)
+        {
+            if (string.IsNullOrEmpty(rawResponse))
+                return null;
+            
+            AnalyticsBatchResponse response = null;
+            try
+            {
+                response = JsonUtility.FromJson<AnalyticsBatchResponse>(rawResponse);
+            }
+            catch (Exception ex)
+            {
+                BoostOpsLogger.LogWarning("Analytics", $"Could not parse batch response for server config: {ex.Message}");
+                return null;
+            }
+            
+            if (response == null)
+                return null;
+            
+            // Update accepted schema versions
+            if (response.accepted_schema_major != null && response.accepted_schema_major.Length > 0)
+            {
+                SetAcceptedSchemaVersions(response.accepted_schema_major);
+            }
+            
+            // Update schema enforcement flag (fail-open strategy)
+            // Only enforce if server explicitly sets it to true
+            bool previousEnforcement = _enforceSchemaValidation;
+            _enforceSchemaValidation = response.enforce_schema_validation;
+            
+            if (_enforceSchemaValidation != previousEnforcement)
+            {
+                string mode = _enforceSchemaValidation ? "STRICT (blocking unsupported schemas)" : "PERMISSIVE (warn only)";
+                BoostOpsLogger.LogInfo("Analytics", $"📋 Schema validation mode changed: {mode}");
+            }
+            
+            // Apply server config (kill switch, schemas, endpoint)
+            // Note: disabled=true means kill switch ON (analytics disabled)
+            BoostOpsAnalyticsProvider.ApplyServerConfig(
+                disabled: response.disabled,
+                acceptedSchemas: response.accepted_schema_major,
+                endpoint: response.endpoint
+            );
+            
+            return response;
+        }
         
         /// <summary>
         /// Handle server response for analytics control (kill switch, versioning, etc.)
@@ -1525,12 +1665,40 @@ namespace BoostOps.Analytics
                 PlayerPrefs.SetInt(BoostOpsPlayerPrefsKeys.ANALYTICS_DISABLED, _isAnalyticsDisabled ? 1 : 0);
                 PlayerPrefs.SetString(BoostOpsPlayerPrefsKeys.ANALYTICS_BACKOFF_UNTIL, _backoffUntil.ToBinary().ToString());
                 PlayerPrefs.SetString(BoostOpsPlayerPrefsKeys.ANALYTICS_DISABLE_REASON, _disableReason ?? "");
+                if (_isAnalyticsDisabled)
+                {
+                    PlayerPrefs.SetString(BoostOpsPlayerPrefsKeys.ANALYTICS_DISABLED_AT, System.DateTime.UtcNow.ToBinary().ToString());
+                }
+                else
+                {
+                    PlayerPrefs.DeleteKey(BoostOpsPlayerPrefsKeys.ANALYTICS_DISABLED_AT);
+                }
                 PlayerPrefs.Save();
             }
             catch (System.Exception ex)
             {
                 BoostOpsLogger.LogError("Analytics", $"Failed to persist analytics state: {ex.Message}");
             }
+        }
+        
+        /// <summary>
+        /// When the server kill switch last fired, or null if unknown.
+        /// </summary>
+        private System.DateTime? LoadDisabledAtUtc()
+        {
+            try
+            {
+                var binaryStr = PlayerPrefs.GetString(BoostOpsPlayerPrefsKeys.ANALYTICS_DISABLED_AT, "");
+                if (!string.IsNullOrEmpty(binaryStr) && long.TryParse(binaryStr, out long binary))
+                {
+                    return System.DateTime.FromBinary(binary);
+                }
+            }
+            catch (System.Exception)
+            {
+                // fall through
+            }
+            return null;
         }
         
         /// <summary>
@@ -1568,8 +1736,17 @@ namespace BoostOps.Analytics
         
         #region Offline Queue Management
         
+        // Full event payloads are persisted as one JSON file per event under
+        // persistentDataPath/BoostOps/events/{event_id}.json — the same
+        // retry-until-acked pattern BoostOpsPurchaseClient uses. Files are
+        // deleted when a batch containing the event is acked by the server,
+        // and replayed on the next launch otherwise. The old PlayerPrefs
+        // implementation only stored lossy "markers" and could not replay.
+        
+        private string EventQueueDir => Path.Combine(Application.persistentDataPath, EVENT_QUEUE_SUBDIR);
+        
         /// <summary>
-        /// Save failed events to offline queue for later retry
+        /// Save failed events to the offline queue (memory + disk) for later retry
         /// </summary>
         private void SaveToOfflineQueue(List<AnalyticsEventData> events)
         {
@@ -1584,10 +1761,8 @@ namespace BoostOps.Analytics
                     }
                     
                     _offlineQueue.Enqueue(evt);
+                    PersistEventToDisk(evt);
                 }
-                
-                // Persist to PlayerPrefs (serialize to JSON)
-                PersistOfflineQueue();
                 
                 BoostOpsLogger.LogInfo("Analytics", $"💾 Saved {events.Count} events to offline queue (total: {_offlineQueue.Count})");
             }
@@ -1598,70 +1773,198 @@ namespace BoostOps.Analytics
         }
         
         /// <summary>
-        /// Load offline queue from PlayerPrefs on initialization
+        /// Persist a single event's full JSON payload to disk so it survives
+        /// process kill and can be replayed on the next launch.
         /// </summary>
-        private void LoadOfflineQueue()
+        private void PersistEventToDisk(AnalyticsEventData evt)
         {
             try
             {
-                var offlineJson = PlayerPrefs.GetString("BoostOps_OfflineQueue", "");
-                if (string.IsNullOrEmpty(offlineJson))
+                if (evt == null || string.IsNullOrEmpty(evt.event_id))
                     return;
                 
-                // Deserialize offline events (simple JSON array of event_type + nonce for tracking)
-                var offlineData = JsonUtility.FromJson<OfflineQueueData>(offlineJson);
-                if (offlineData?.events != null && offlineData.events.Length > 0)
+                var dir = EventQueueDir;
+                Directory.CreateDirectory(dir);
+                
+                // Bound disk usage: drop the oldest files beyond the cap.
+                var existing = Directory.GetFiles(dir, "*.json");
+                if (existing.Length >= MAX_PERSISTED_EVENT_FILES)
                 {
-                    BoostOpsLogger.LogInfo("Analytics", $"📥 Loaded {offlineData.events.Length} events from offline queue");
-                    
-                    // Note: We only persist event metadata (type, nonce) not full payloads
-                    // Full events would be too large for PlayerPrefs
-                    // These are just markers to show that events were lost
+                    foreach (var oldest in existing
+                        .OrderBy(f => File.GetLastWriteTimeUtc(f))
+                        .Take(existing.Length - MAX_PERSISTED_EVENT_FILES + 1))
+                    {
+                        File.Delete(oldest);
+                    }
+                }
+                
+                File.WriteAllText(Path.Combine(dir, evt.event_id + ".json"), CreateCleanJsonString(evt));
+            }
+            catch (System.Exception ex)
+            {
+                BoostOpsLogger.LogWarning("Analytics", $"Failed to persist event to disk: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Persist the entire in-memory queue to disk without draining it.
+        /// Called when the app is backgrounded/quit: the flush attempt may not
+        /// complete before the process is killed, so events are made durable
+        /// first. Server-side dedup on event_id prevents double counting when
+        /// both the flush and a later replay succeed.
+        /// </summary>
+        internal void PersistQueueSnapshot()
+        {
+            try
+            {
+                foreach (var evt in _eventQueue)
+                {
+                    PersistEventToDisk(evt);
                 }
             }
             catch (System.Exception ex)
             {
-                BoostOpsLogger.LogError("Analytics", $"Failed to load offline queue: {ex.Message}");
+                BoostOpsLogger.LogWarning("Analytics", $"Failed to persist queue snapshot: {ex.Message}");
             }
         }
         
         /// <summary>
-        /// Persist offline queue to PlayerPrefs
-        /// Note: Only stores event metadata (type + nonce) to avoid PlayerPrefs size limits
+        /// Remove persisted copies of events that were successfully acked.
         /// </summary>
-        private void PersistOfflineQueue()
+        private void DeletePersistedEvents(List<AnalyticsEventData> events)
         {
             try
             {
-                // Create lightweight representation (event_type + event_id)
-                // Note: nonce is NOT persisted - it's regenerated fresh per send attempt
-                var offlineMetadata = _offlineQueue.Select(e => new OfflineEventMetadata 
-                { 
-                    event_type = e.event_type,
-                    event_id = e.event_id,
-                    timestamp_ms = e.timestamp_ms
-                }).Take(OFFLINE_QUEUE_MAX_SIZE).ToArray();
+                var dir = EventQueueDir;
+                if (!Directory.Exists(dir))
+                    return;
                 
-                var offlineData = new OfflineQueueData { events = offlineMetadata };
-                var json = JsonUtility.ToJson(offlineData);
-                
-                PlayerPrefs.SetString("BoostOps_OfflineQueue", json);
-                PlayerPrefs.Save();
+                foreach (var evt in events)
+                {
+                    if (evt == null || string.IsNullOrEmpty(evt.event_id))
+                        continue;
+                    var path = Path.Combine(dir, evt.event_id + ".json");
+                    if (File.Exists(path))
+                        File.Delete(path);
+                }
             }
             catch (System.Exception ex)
             {
-                BoostOpsLogger.LogError("Analytics", $"Failed to persist offline queue: {ex.Message}");
+                BoostOpsLogger.LogWarning("Analytics", $"Failed to delete persisted events: {ex.Message}");
+            }
+        }
+        
+        private System.Collections.IEnumerator ReplayPersistedEventsAfterDelay(float delaySeconds)
+        {
+            yield return new WaitForSeconds(delaySeconds);
+            yield return ReplayPersistedEvents();
+        }
+        
+        /// <summary>
+        /// Replay events persisted in previous sessions. Sends the raw
+        /// persisted JSON (with a fresh per-attempt nonce) in batches; deletes
+        /// files on ack or on non-retryable rejection, keeps them for the next
+        /// launch on transient failure.
+        /// </summary>
+        private System.Collections.IEnumerator ReplayPersistedEvents()
+        {
+            if (!IsInitialized || IsAnalyticsDisabled)
+                yield break;
+            
+            string[] files = null;
+            try
+            {
+                var dir = EventQueueDir;
+                if (Directory.Exists(dir))
+                    files = Directory.GetFiles(dir, "*.json");
+            }
+            catch (System.Exception ex)
+            {
+                BoostOpsLogger.LogWarning("Analytics", $"Failed to scan persisted event queue: {ex.Message}");
+            }
+            
+            if (files == null || files.Length == 0)
+                yield break;
+            
+            BoostOpsLogger.LogInfo("Analytics", $"🔄 Replaying {files.Length} persisted event(s) from previous session");
+            
+            const int replayBatchSize = 50;
+            for (int offset = 0; offset < files.Length; offset += replayBatchSize)
+            {
+                var batchFiles = files.Skip(offset).Take(replayBatchSize).ToArray();
+                var payloads = new List<string>();
+                foreach (var file in batchFiles)
+                {
+                    try
+                    {
+                        var json = File.ReadAllText(file);
+                        if (!string.IsNullOrEmpty(json))
+                            payloads.Add(WithFreshNonce(json));
+                    }
+                    catch (System.Exception ex)
+                    {
+                        BoostOpsLogger.LogWarning("Analytics", $"Failed to read persisted event {Path.GetFileName(file)}: {ex.Message}");
+                    }
+                }
+                
+                if (payloads.Count == 0)
+                    continue;
+                
+                var jsonData = "{\"events\":[" + string.Join(",", payloads) + "]}";
+                var request = CreatePostRequest(_eventsUrl, jsonData);
+                
+                yield return request.SendWebRequest();
+                
+                try
+                {
+                    if (request.result == UnityWebRequest.Result.Success)
+                    {
+                        BoostOpsLogger.LogDebug("Analytics", $"✅ Replayed {payloads.Count} persisted event(s)");
+                        HandleServerResponse(request.responseCode, request.downloadHandler?.text);
+                        foreach (var file in batchFiles)
+                        {
+                            if (File.Exists(file)) File.Delete(file);
+                        }
+                    }
+                    else if (!IsRetryableError(request.responseCode, request.result))
+                    {
+                        // Permanent rejection (e.g. 400 validation) — drop so we
+                        // don't loop forever on poison payloads.
+                        BoostOpsLogger.LogWarning("Analytics", $"Persisted events rejected ({request.responseCode}) - discarding {batchFiles.Length} file(s)");
+                        HandleServerResponse(request.responseCode, request.downloadHandler?.text);
+                        foreach (var file in batchFiles)
+                        {
+                            if (File.Exists(file)) File.Delete(file);
+                        }
+                    }
+                    else
+                    {
+                        // Transient failure — keep files for the next launch.
+                        BoostOpsLogger.LogDebug("Analytics", $"Replay failed transiently ({request.responseCode}) - will retry next launch");
+                        yield break;
+                    }
+                }
+                finally
+                {
+                    request.Dispose();
+                }
             }
         }
         
         /// <summary>
-        /// Clear offline queue (called after successful send)
+        /// Replace (or insert) the nonce field in a persisted event JSON so
+        /// every network attempt carries a fresh replay-protection token.
         /// </summary>
-        private void ClearOfflineQueue()
+        private static string WithFreshNonce(string eventJson)
         {
-            _offlineQueue.Clear();
-            PlayerPrefs.DeleteKey("BoostOps_OfflineQueue");
-            PlayerPrefs.Save();
+            var nonce = System.Guid.NewGuid().ToString("N");
+            if (eventJson.Contains("\"nonce\":"))
+            {
+                return System.Text.RegularExpressions.Regex.Replace(
+                    eventJson, "\"nonce\":\"[^\"]*\"", $"\"nonce\":\"{nonce}\"");
+            }
+            // No nonce persisted (event never attempted) — insert after '{'
+            return eventJson.Insert(1, $"\"nonce\":\"{nonce}\",");
         }
         
         /// <summary>
@@ -1669,23 +1972,40 @@ namespace BoostOps.Analytics
         /// </summary>
         public void ProcessOfflineQueue()
         {
-            if (_offlineQueue.Count == 0)
-                return;
-            
-            BoostOpsLogger.LogInfo("Analytics", $"🔄 Processing {_offlineQueue.Count} offline events");
-            
-            // Move offline events to main queue for retry
-            while (_offlineQueue.Count > 0)
+            // Move same-session offline events back to the main queue
+            if (_offlineQueue.Count > 0)
             {
-                var evt = _offlineQueue.Dequeue();
-                _eventQueue.Enqueue(evt);
+                BoostOpsLogger.LogInfo("Analytics", $"🔄 Processing {_offlineQueue.Count} offline events");
+                while (_offlineQueue.Count > 0)
+                {
+                    _eventQueue.Enqueue(_offlineQueue.Dequeue());
+                }
+                FlushQueue();
             }
             
-            // Clear persisted offline queue
-            ClearOfflineQueue();
-            
-            // Trigger immediate processing
-            FlushQueue();
+            // Also replay anything persisted to disk
+            StartCoroutineRunner();
+            _coroutineRunner.StartCoroutine(ReplayPersistedEvents());
+        }
+        
+        /// <summary>
+        /// One-time cleanup of the legacy PlayerPrefs marker queue, which
+        /// stored lossy metadata rather than replayable events.
+        /// </summary>
+        private void CleanupLegacyOfflineQueue()
+        {
+            try
+            {
+                if (PlayerPrefs.HasKey("BoostOps_OfflineQueue"))
+                {
+                    PlayerPrefs.DeleteKey("BoostOps_OfflineQueue");
+                    PlayerPrefs.Save();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                BoostOpsLogger.LogWarning("Analytics", $"Failed to clean legacy offline queue: {ex.Message}");
+            }
         }
         
         #endregion
@@ -1713,11 +2033,19 @@ namespace BoostOps.Analytics
         
         #region Application Lifecycle
         
-        private void OnApplicationPause(bool pauseStatus)
+        // NOTE: These handlers are invoked by CoroutineRunner (a MonoBehaviour).
+        // They used to be private methods named OnApplicationPause/-Focus on
+        // this plain C# class, which Unity never calls — the background-flush
+        // path was dead code and events were lost when the app was killed
+        // while backgrounded.
+        
+        internal void HandleApplicationPause(bool pauseStatus)
         {
             if (pauseStatus)
             {
-                // App is being paused/backgrounded - flush queue and record timestamp
+                // App is being paused/backgrounded. Persist first (the flush
+                // may not complete before the process is killed), then flush.
+                PersistQueueSnapshot();
                 FlushQueue();
                 BoostOpsEventBuilder.RecordBackgroundTimestamp();
                 
@@ -1757,11 +2085,12 @@ namespace BoostOps.Analytics
             }
         }
         
-        private void OnApplicationFocus(bool hasFocus)
+        internal void HandleApplicationFocus(bool hasFocus)
         {
             if (!hasFocus)
             {
-                // App is losing focus - flush queue and record timestamp
+                // App is losing focus. Persist first, then flush (see pause handler).
+                PersistQueueSnapshot();
                 FlushQueue();
                 BoostOpsEventBuilder.RecordBackgroundTimestamp();
                 
@@ -1801,13 +2130,14 @@ namespace BoostOps.Analytics
             }
         }
         
-        private void OnDestroy()
+        /// <summary>
+        /// Invoked from CoroutineRunner.OnApplicationQuit. Coroutines cannot
+        /// complete during quit, so durability comes from the disk snapshot;
+        /// events are replayed on the next launch.
+        /// </summary>
+        internal void HandleApplicationQuit()
         {
-            if (_instance == this)
-            {
-                FlushQueue();
-                _instance = null;
-            }
+            PersistQueueSnapshot();
         }
         
         /// <summary>
@@ -1924,26 +2254,9 @@ namespace BoostOps.Analytics
         public PrivacyInfo privacy;        // Privacy and GDPR information from server
     }
     
-    /// <summary>
-    /// Offline queue metadata for persistence (lightweight storage)
-    /// </summary>
-    [Serializable]
-    public class OfflineEventMetadata
-    {
-        public string event_type;
-        public string event_id;     // Database UNIQUE INDEX (never changes)
-        // Note: nonce is NOT persisted (regenerated fresh per send attempt)
-        public long timestamp_ms;
-    }
-    
-    /// <summary>
-    /// Offline queue data container for serialization
-    /// </summary>
-    [Serializable]
-    public class OfflineQueueData
-    {
-        public OfflineEventMetadata[] events;
-    }
+    // Note: the legacy OfflineEventMetadata/OfflineQueueData marker classes were
+    // removed — offline events are now persisted as full JSON payload files
+    // under persistentDataPath/BoostOps/events/ and replayed on launch.
     
     #endregion
     
@@ -1952,8 +2265,24 @@ namespace BoostOps.Analytics
     /// </summary>
     public class CoroutineRunner : UnityEngine.MonoBehaviour
     {
-        // This empty MonoBehaviour just provides coroutine functionality
-        // All analytics network requests run through this to prevent UI freezing
+        // Provides coroutine functionality for analytics network requests AND
+        // forwards Unity lifecycle callbacks to the (non-MonoBehaviour)
+        // analytics client so pause/quit flush + persistence actually run.
+        
+        private void OnApplicationPause(bool pauseStatus)
+        {
+            BoostOpsAnalyticsClient.ExistingInstance?.HandleApplicationPause(pauseStatus);
+        }
+        
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            BoostOpsAnalyticsClient.ExistingInstance?.HandleApplicationFocus(hasFocus);
+        }
+        
+        private void OnApplicationQuit()
+        {
+            BoostOpsAnalyticsClient.ExistingInstance?.HandleApplicationQuit();
+        }
     }
     
     // Legacy SerializableDictionary class removed - new schema uses structured JSONB data

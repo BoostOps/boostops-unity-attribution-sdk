@@ -38,6 +38,13 @@ namespace BoostOps
         public const string INSTALL_REFERRER_PROCESSED = "boostops.install_referrer_processed";
         public const string INSTALL_REFERRER_CLICK_TS = "boostops.install_referrer_click_ts";
         public const string INSTALL_REFERRER_INSTALL_BEGIN_TS = "boostops.install_referrer_install_begin_ts";
+
+        // Microsoft Store Campaign Attribution (Windows: UWP + StandaloneWindows64-MSIX)
+        // Mirrors the Android Install Referrer pattern: the async WinRT read writes
+        // its result here so first_open's app_open event picks it up synchronously.
+        public const string MS_STORE_CAMPAIGN_ID = "boostops.ms_store_campaign_id";
+        public const string MS_STORE_CAMPAIGN_PROCESSED = "boostops.ms_store_campaign_processed";
+        public const string MS_STORE_CAMPAIGN_ATTEMPTED = "boostops.ms_store_campaign_attempted";
         
         // Revenue Tracking Settings
         public const string AUTO_REVENUE_TRACKING = "boostops.auto_revenue_tracking";
@@ -55,7 +62,7 @@ namespace BoostOps
         public const string HASHED_DEVICE_ID = "boostops.hashed_device_id";
         public const string HASHED_IDFV = "boostops.hashed_idfv";
         public const string HASHED_IDFA = "boostops.hashed_idfa";
-        public const string RAW_IDFA_CACHE = "boostops.raw_idfa_cache"; // For detecting resets
+        public const string RAW_IDFA_CACHE = "boostops.raw_idfa_cache"; // Legacy (cleanup only): raw IDFA is never persisted anymore; reset detection compares hashes
         public const string MIN_TRACKING_AMOUNT_CENTS = "boostops.min_tracking_amount_cents";
         public const string USER_PROPERTY_PREFIX = "boostops.user_property."; // Append property key
         
@@ -63,6 +70,7 @@ namespace BoostOps
         public const string ANALYTICS_DISABLED = "boostops.analytics_disabled";
         public const string ANALYTICS_BACKOFF_UNTIL = "boostops.analytics_backoff_until";
         public const string ANALYTICS_DISABLE_REASON = "boostops.analytics_disable_reason";
+        public const string ANALYTICS_DISABLED_AT = "boostops.analytics_disabled_at"; // UTC DateTime.ToBinary; drives 24h kill-switch re-probe
         
         // Purchase Tracking
         public const string HAS_MADE_PURCHASE = "boostops.has_made_purchase";
@@ -202,19 +210,14 @@ namespace BoostOps
                     return;
                 }
                 
-                // Try float (GetFloat returns 0.0 by default, so use a sentinel value)
-                float floatValue = PlayerPrefs.GetFloat(oldKey, float.MinValue);
-                if (!float.IsNaN(floatValue) && floatValue != float.MinValue)
-                {
-                    PlayerPrefs.SetFloat(newKey, floatValue);
-                    PlayerPrefs.DeleteKey(oldKey);
-                    Debug.Log($"[BoostOps] Migrated float: {oldKey} → {newKey} (value: {floatValue})");
-                    return;
-                }
-                
-                // If we get here, we couldn't determine the type - just delete the old key
-                Debug.LogWarning($"[BoostOps] Could not determine type for {oldKey} - deleting old key");
+                // Key exists (HasKey checked above) and is neither string nor
+                // int, so it must be a float. Migrate whatever GetFloat returns
+                // — legitimate values like 0.0 or sentinel-colliding values are
+                // preserved instead of being dropped or fabricated.
+                float floatValue = PlayerPrefs.GetFloat(oldKey, 0f);
+                PlayerPrefs.SetFloat(newKey, floatValue);
                 PlayerPrefs.DeleteKey(oldKey);
+                Debug.Log($"[BoostOps] Migrated float: {oldKey} → {newKey} (value: {floatValue})");
             }
             catch (System.Exception e)
             {
@@ -251,6 +254,11 @@ namespace BoostOps
             PlayerPrefs.DeleteKey(INSTALL_REFERRER_PROCESSED);
             PlayerPrefs.DeleteKey(INSTALL_REFERRER_CLICK_TS);
             PlayerPrefs.DeleteKey(INSTALL_REFERRER_INSTALL_BEGIN_TS);
+
+            // Microsoft Store Campaign
+            PlayerPrefs.DeleteKey(MS_STORE_CAMPAIGN_ID);
+            PlayerPrefs.DeleteKey(MS_STORE_CAMPAIGN_PROCESSED);
+            PlayerPrefs.DeleteKey(MS_STORE_CAMPAIGN_ATTEMPTED);
             
             // Revenue Tracking Settings
             PlayerPrefs.DeleteKey(AUTO_REVENUE_TRACKING);
@@ -262,6 +270,7 @@ namespace BoostOps
             PlayerPrefs.DeleteKey(ANALYTICS_DISABLED);
             PlayerPrefs.DeleteKey(ANALYTICS_BACKOFF_UNTIL);
             PlayerPrefs.DeleteKey(ANALYTICS_DISABLE_REASON);
+            PlayerPrefs.DeleteKey(ANALYTICS_DISABLED_AT);
             PlayerPrefs.DeleteKey(HAS_MADE_PURCHASE);
             
             // Clean up impression and click data (single keys)

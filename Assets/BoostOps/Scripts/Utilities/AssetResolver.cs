@@ -375,6 +375,88 @@ namespace BoostOps
 
         private static readonly Dictionary<string, Sprite> _spriteCache = new Dictionary<string, Sprite>();
         private static readonly Dictionary<string, Texture2D> _textureCache = new Dictionary<string, Texture2D>();
+        
+        // Insertion order for eviction. Without a bound, every downloaded
+        // creative stays in memory for the app's lifetime (textures are the
+        // dominant cost — a few MB each on retina-scale creatives).
+        private static readonly List<string> _spriteCacheOrder = new List<string>();
+        private static readonly List<string> _textureCacheOrder = new List<string>();
+        private const int MAX_CACHED_ASSETS = 50;
+        
+        private static void CacheSprite(string cacheKey, Sprite sprite)
+        {
+            if (string.IsNullOrEmpty(cacheKey) || sprite == null) return;
+            
+            if (!_spriteCache.ContainsKey(cacheKey))
+                _spriteCacheOrder.Add(cacheKey);
+            _spriteCache[cacheKey] = sprite;
+            
+            while (_spriteCacheOrder.Count > MAX_CACHED_ASSETS)
+            {
+                var oldestKey = _spriteCacheOrder[0];
+                _spriteCacheOrder.RemoveAt(0);
+                if (_spriteCache.TryGetValue(oldestKey, out var evicted))
+                {
+                    _spriteCache.Remove(oldestKey);
+                    DestroySprite(evicted);
+                }
+            }
+        }
+        
+        private static void CacheTexture(string cacheKey, Texture2D texture)
+        {
+            if (string.IsNullOrEmpty(cacheKey) || texture == null) return;
+            
+            if (!_textureCache.ContainsKey(cacheKey))
+                _textureCacheOrder.Add(cacheKey);
+            _textureCache[cacheKey] = texture;
+            
+            while (_textureCacheOrder.Count > MAX_CACHED_ASSETS)
+            {
+                var oldestKey = _textureCacheOrder[0];
+                _textureCacheOrder.RemoveAt(0);
+                if (_textureCache.TryGetValue(oldestKey, out var evicted))
+                {
+                    _textureCache.Remove(oldestKey);
+                    if (evicted != null)
+                        UnityEngine.Object.Destroy(evicted);
+                }
+            }
+        }
+        
+        private static void DestroySprite(Sprite sprite)
+        {
+            if (sprite == null) return;
+            // Don't destroy the backing texture if the texture cache still
+            // references it (sprite + texture caches can share textures).
+            var texture = sprite.texture;
+            UnityEngine.Object.Destroy(sprite);
+            if (texture != null && !_textureCache.ContainsValue(texture))
+            {
+                UnityEngine.Object.Destroy(texture);
+            }
+        }
+        
+        /// <summary>
+        /// Release all in-memory cached sprites/textures (disk cache is kept).
+        /// </summary>
+        public static void ClearMemoryCache()
+        {
+            foreach (var sprite in _spriteCache.Values.ToList())
+            {
+                DestroySprite(sprite);
+            }
+            _spriteCache.Clear();
+            _spriteCacheOrder.Clear();
+            
+            foreach (var texture in _textureCache.Values)
+            {
+                if (texture != null)
+                    UnityEngine.Object.Destroy(texture);
+            }
+            _textureCache.Clear();
+            _textureCacheOrder.Clear();
+        }
 
         private static string GetCacheKey(string url)
         {
@@ -399,10 +481,14 @@ namespace BoostOps
             if (string.IsNullOrEmpty(cacheKey))
                 return null;
 
-            // Check memory cache first
+            // Check memory cache first (entry may hold a destroyed object
+            // after eviction/scene teardown — treat it as a miss)
             if (_spriteCache.TryGetValue(cacheKey, out var cachedSprite))
             {
-                return cachedSprite;
+                if (cachedSprite != null)
+                    return cachedSprite;
+                _spriteCache.Remove(cacheKey);
+                _spriteCacheOrder.Remove(cacheKey);
             }
 
             // Check disk cache
@@ -416,7 +502,7 @@ namespace BoostOps
                     if (texture.LoadImage(data))
                     {
                         var sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), Vector2.one * 0.5f);
-                        _spriteCache[cacheKey] = sprite;
+                        CacheSprite(cacheKey, sprite);
                         return sprite;
                     }
                 }
@@ -434,10 +520,14 @@ namespace BoostOps
             if (string.IsNullOrEmpty(cacheKey))
                 return null;
 
-            // Check memory cache first
+            // Check memory cache first (entry may hold a destroyed object
+            // after eviction/scene teardown — treat it as a miss)
             if (_textureCache.TryGetValue(cacheKey, out var cachedTexture))
             {
-                return cachedTexture;
+                if (cachedTexture != null)
+                    return cachedTexture;
+                _textureCache.Remove(cacheKey);
+                _textureCacheOrder.Remove(cacheKey);
             }
 
             // Check disk cache
@@ -450,7 +540,7 @@ namespace BoostOps
                     var texture = new Texture2D(2, 2);
                     if (texture.LoadImage(data))
                     {
-                        _textureCache[cacheKey] = texture;
+                        CacheTexture(cacheKey, texture);
                         return texture;
                     }
                 }
@@ -473,7 +563,7 @@ namespace BoostOps
             if (texture != null)
             {
                 var sprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), Vector2.one * 0.5f);
-                _spriteCache[cacheKey] = sprite;
+                CacheSprite(cacheKey, sprite);
                 return sprite;
             }
             return null;
@@ -490,7 +580,7 @@ namespace BoostOps
                     if (request.result == UnityWebRequest.Result.Success)
                     {
                         var texture = DownloadHandlerTexture.GetContent(request);
-                        _textureCache[cacheKey] = texture;
+                        CacheTexture(cacheKey, texture);
 
                         // Save to disk cache
                         if (!string.IsNullOrEmpty(cacheKey))

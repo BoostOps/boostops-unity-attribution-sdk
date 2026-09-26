@@ -17,6 +17,7 @@ namespace BoostOps.Internal
         private string sdkKey;
         private string demoDataFile;
         private bool isInitialized = false;
+        private bool isInitializing = false;
         private BoostOpsManagerInternal managerInternal;
         
         // Track if app has been opened before in this memory session (for cold vs warm detection)
@@ -62,6 +63,20 @@ namespace BoostOps.Internal
         public static void SetCoroutineRunner(MonoBehaviour runner)
         {
             _coroutineRunner = runner;
+        }
+        
+        /// <summary>
+        /// Reset static state between play sessions. Called from
+        /// BoostOpsSDK's SubsystemRegistration hook so the SDK works with
+        /// Enter Play Mode Options (domain reload disabled).
+        /// </summary>
+        public static void ResetStaticState()
+        {
+            hasOpenedInCurrentSession = false;
+            _sdkInitializedStatic = false;
+            _sdkLocalModeStatic = false;
+            _coroutineRunner = null;
+            BoostOps.Analytics.BoostOpsAnalyticsClient.ResetStaticState();
         }
         
         #endregion
@@ -162,6 +177,48 @@ namespace BoostOps.Internal
         /// </summary>
         public async void Init(Action<BoostOps.Internal.InitResult> callback = null)
         {
+            // IDEMPOTENCY: the public API documents Init() as safe to call
+            // multiple times. Re-running would fire a duplicate app_open,
+            // re-subscribe manager events, and re-run install referrer /
+            // revenue tracker setup — so bail out early instead.
+            if (isInitialized)
+            {
+                BoostOpsLogger.LogDebug("SDKInternal", "Init() called but SDK is already initialized - returning success");
+                callback?.Invoke(new BoostOps.Internal.InitResult
+                {
+                    Success = true,
+                    Mode = "AlreadyInitialized",
+                    CampaignCount = managerInternal?.CampaignCount ?? 0,
+                    ErrorMessage = null
+                });
+                return;
+            }
+            
+            if (isInitializing)
+            {
+                BoostOpsLogger.LogWarning("SDKInternal", "Init() called while initialization is already in progress - ignoring duplicate call");
+                callback?.Invoke(new BoostOps.Internal.InitResult
+                {
+                    Success = false,
+                    Mode = "InitInProgress",
+                    ErrorMessage = "Initialization already in progress"
+                });
+                return;
+            }
+            
+            // The manager is injected by BoostOpsManager.Awake(); if it hasn't
+            // happened yet (script execution order, manual construction), fail
+            // gracefully instead of throwing NullReferenceException mid-init.
+            if (managerInternal == null)
+            {
+                const string noManagerMsg = "Internal manager not set - BoostOpsManager must be created before Init()";
+                Debug.LogError($"[BoostOpsSDKInternal] {noManagerMsg}");
+                OnInitFailed?.Invoke(new InitError { Message = noManagerMsg, Code = "NO_MANAGER" });
+                callback?.Invoke(new BoostOps.Internal.InitResult { Success = false, ErrorMessage = noManagerMsg });
+                return;
+            }
+            
+            isInitializing = true;
             try
             {
                 // BoostOpsLogger.LogInfo("SDKInternal", "Starting SDK initialization...");
@@ -198,6 +255,10 @@ namespace BoostOps.Internal
                 Debug.LogError($"[BoostOpsSDKInternal] Initialization failed: {ex.Message}");
                 OnInitFailed?.Invoke(new InitError { Message = ex.Message, Code = "INIT_EXCEPTION", InnerException = ex });
                 callback?.Invoke(new BoostOps.Internal.InitResult { Success = false, ErrorMessage = ex.Message });
+            }
+            finally
+            {
+                isInitializing = false;
             }
         }
         
@@ -361,6 +422,10 @@ namespace BoostOps.Internal
                 
                 // Initialize Install Attribution (creates native Install Referrer plugin on Android)
                 InitializeInstallAttribution();
+
+                // Initialize Microsoft Store campaign attribution (UWP + StandaloneWindows-MSIX)
+                // Compiles to a no-op on every other target.
+                InitializeMicrosoftStoreAttribution();
                 
                 // Send app open event immediately with first session detection (industry standard)
                 // Uses hardcoded endpoint for first session, normal routing for subsequent opens
@@ -507,6 +572,28 @@ namespace BoostOps.Internal
                     // REGULAR LAUNCH: Send immediately (no referrer needed)
                     SendAppOpenEventImmediate(launchType, isFirstLaunch);
                 }
+#elif (UNITY_WSA || UNITY_STANDALONE_WIN) && !UNITY_EDITOR
+                // WINDOWS (UWP + StandaloneWindows-MSIX): Wait briefly for the MS Store
+                // campaign id on first launch. The WinRT call kicked off in
+                // InitializeMicrosoftStoreAttribution() typically completes within a few
+                // hundred ms but we cap at 2s to match Android's referrer behavior.
+                if (isFirstLaunch && BoostOpsMicrosoftStoreCampaign.IsSupportedOnThisBuild)
+                {
+                    Debug.Log($"[BoostOpsSDKInternal] 🎯 Windows first launch - waiting for MS Store campaign (up to 2s)...");
+                    if (_coroutineRunner != null)
+                    {
+                        _coroutineRunner.StartCoroutine(WaitForMicrosoftStoreCampaignThenTrackAppOpen(launchType, isFirstLaunch));
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[BoostOpsSDKInternal] ⚠️ Coroutine runner not available - sending first launch event immediately");
+                        SendAppOpenEventImmediate(launchType, isFirstLaunch);
+                    }
+                }
+                else
+                {
+                    SendAppOpenEventImmediate(launchType, isFirstLaunch);
+                }
 #else
                 // iOS / Editor / Other platforms: Always send immediately
                 // iOS attribution comes from deep links, Apple Search Ads, SKAdNetwork
@@ -554,7 +641,54 @@ namespace BoostOps.Internal
             // Now send app_open event (with or without referrer data)
             SendAppOpenEventImmediate(launchType, isFirstLaunch);
         }
-        
+
+        /// <summary>
+        /// Coroutine: Wait for the Microsoft Store campaign id to land in PlayerPrefs
+        /// before sending the first app_open event. Mirrors the Android Install
+        /// Referrer wait behavior — 2s cap, fall through to organic if nothing arrives.
+        /// </summary>
+        private static System.Collections.IEnumerator WaitForMicrosoftStoreCampaignThenTrackAppOpen(string launchType, bool isFirstLaunch)
+        {
+            const float TIMEOUT = 2f;
+            float elapsed = 0f;
+            bool campaignReceived = false;
+
+            Debug.Log($"[BoostOpsSDKInternal] ⏱️ Waiting for MS Store campaign (timeout: {TIMEOUT}s)...");
+
+            // Poll for either a non-empty cid or the "we've finished trying" marker.
+            // The PROCESSED key is only written on a non-empty hit; the ATTEMPTED key
+            // is written once the WinRT call finishes either way, so checking ATTEMPTED
+            // lets us short-circuit the wait when the OS has confirmed there is no
+            // campaign (e.g. organic install, sideload).
+            while (elapsed < TIMEOUT)
+            {
+                string cid = PlayerPrefs.GetString(BoostOpsPlayerPrefsKeys.MS_STORE_CAMPAIGN_ID, "");
+                if (!string.IsNullOrEmpty(cid))
+                {
+                    campaignReceived = true;
+                    Debug.Log($"[BoostOpsSDKInternal] ✅ MS Store campaign received after {elapsed:F2}s: {cid}");
+                    break;
+                }
+
+                string attempted = PlayerPrefs.GetString(BoostOpsPlayerPrefsKeys.MS_STORE_CAMPAIGN_ATTEMPTED, "");
+                if (!string.IsNullOrEmpty(attempted))
+                {
+                    Debug.Log($"[BoostOpsSDKInternal] ⏱️ MS Store reported no campaign after {elapsed:F2}s (organic install)");
+                    break;
+                }
+
+                yield return new WaitForSeconds(0.1f);
+                elapsed += 0.1f;
+            }
+
+            if (!campaignReceived && elapsed >= TIMEOUT)
+            {
+                Debug.Log($"[BoostOpsSDKInternal] ⏱️ MS Store campaign timeout ({TIMEOUT}s) - sending event without campaign (organic install)");
+            }
+
+            SendAppOpenEventImmediate(launchType, isFirstLaunch);
+        }
+
         /// <summary>
         /// Send app_open event immediately (internal helper)
         /// </summary>
@@ -569,7 +703,14 @@ namespace BoostOps.Internal
                 AppOpenEventDebugger.RecordCall(launchType, isFirstLaunch, "SendAppOpenEventImmediate");
                 
                 // Debug.Log($"[BoostOpsSDKInternal] 🚀🚀🚀 SDK TRACKING APP OPEN - launchType: {launchType}, isFirstSession: {isFirstLaunch}, deeplink: {deeplinkUrl ?? "none"}, hasOpenedInCurrentSession: {hasOpenedInCurrentSession}");
-                
+
+                // Pull MS Store campaign attribution (Windows only — empty string on
+                // every other platform). When present, the SDK populates the same
+                // attribution_* fields that Apple Search Ads / Play Install Referrer
+                // populate downstream, so revenue rolls up by campaign automatically.
+                string msStoreCampaign = BoostOpsMicrosoftStoreCampaign.GetCachedCampaignId();
+                bool hasMsStoreAttribution = !string.IsNullOrEmpty(msStoreCampaign);
+
                 // Industry standard: Single app open event with first session flag
                 BoostOpsAnalyticsContract.TrackAppOpen(
                     launchType: launchType, 
@@ -577,7 +718,13 @@ namespace BoostOps.Internal
                     isFirstSession: isFirstLaunch ? true : (bool?)null,  // Only set true for first session
                     organic: null,        // Let server determine organic vs attributed based on touch history
                     reinstall: null,      // Let server determine reinstall status
-                    forceManagedMode: true  // Always use managed mode for immediate sending
+                    forceManagedMode: true,  // Always use managed mode for immediate sending
+                    attributionSource: hasMsStoreAttribution ? BoostOpsMicrosoftStoreCampaign.AttributionSource : null,
+                    attributionChannel: hasMsStoreAttribution ? BoostOpsMicrosoftStoreCampaign.AttributionChannel : null,
+                    attributionCampaignSlug: hasMsStoreAttribution ? msStoreCampaign : null,
+                    attributionCampaign: hasMsStoreAttribution ? msStoreCampaign : null,
+                    attributionMethod: hasMsStoreAttribution ? BoostOpsMicrosoftStoreCampaign.AttributionMethod : null,
+                    touchType: hasMsStoreAttribution ? BoostOpsMicrosoftStoreCampaign.TouchType : null
                 );
                 
                 // Record that app_open was sent to prevent duplicate from lifecycle handlers
@@ -702,6 +849,41 @@ namespace BoostOps.Internal
             }
         }
         
+        /// <summary>
+        /// Initialize Microsoft Store campaign attribution.
+        ///
+        /// Kicks off the asynchronous WinRT read for the install-time campaign id and
+        /// persists the result (or empty string for organic installs) to PlayerPrefs.
+        /// On non-Windows targets and on Standalone-Windows builds without
+        /// ENABLE_WINMD_SUPPORT this is a no-op; the underlying class is hard-gated
+        /// at compile time so there is zero runtime cost on other platforms.
+        ///
+        /// Mirrors <see cref="InitializeInstallAttribution"/> for Android — the
+        /// SDK fires this once during managed-mode init, then the first_open event
+        /// path picks up whatever the WinRT call returned.
+        /// </summary>
+        private static void InitializeMicrosoftStoreAttribution()
+        {
+            try
+            {
+                if (!BoostOpsMicrosoftStoreCampaign.IsSupportedOnThisBuild)
+                {
+                    return;
+                }
+
+                // Fire-and-forget: the result is consumed via PlayerPrefs by the
+                // WaitForMicrosoftStoreCampaignThenTrackAppOpen coroutine and by
+                // SendAppOpenEventImmediate. We don't need to await it here because
+                // either the wait coroutine sees it land in PlayerPrefs (if it
+                // arrives within 2s) or the event fires without it (organic).
+                _ = BoostOpsMicrosoftStoreCampaign.InitializeAndReadAsync();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[BoostOpsSDKInternal] ⚠️ Failed to start MS Store campaign read: {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// Handle Install Referrer data and save to PlayerPrefs (so wait loop can detect it)
         /// </summary>

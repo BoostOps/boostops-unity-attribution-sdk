@@ -124,11 +124,11 @@ namespace BoostOps
                 // BoostOpsLogger.LogDebug("Analytics", $"✅ Analytics ENABLED by server (schemas: {string.Join(", ", acceptedSchemas ?? new int[0])})");
             }
             
-            // Update endpoint if provided
+            // Update endpoint if provided. UpdateEndpoint enforces the
+            // HTTPS + boostops.io allowlist before applying.
             if (!string.IsNullOrEmpty(endpoint))
             {
-                // TODO: Update analytics client endpoint if it changes
-                BoostOpsLogger.LogDebug("Analytics", $"ℹ️ Server endpoint override: {endpoint}");
+                BoostOps.Analytics.BoostOpsAnalyticsClient.ExistingInstance?.UpdateEndpoint(endpoint);
             }
         }
         

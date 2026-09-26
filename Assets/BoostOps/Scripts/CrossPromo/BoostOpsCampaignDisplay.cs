@@ -52,6 +52,22 @@ namespace BoostOps
         private GameObject currentDisplayObject;
         private bool isShowing = false;
         
+        // Runtime-generated textures/sprites (themed fallback creatives) owned
+        // by this display; destroyed in OnDestroy to avoid GPU memory leaks
+        private readonly List<UnityEngine.Object> _runtimeCreatedObjects = new List<UnityEngine.Object>();
+        
+        void OnDestroy()
+        {
+            foreach (var obj in _runtimeCreatedObjects)
+            {
+                if (obj != null)
+                {
+                    Destroy(obj);
+                }
+            }
+            _runtimeCreatedObjects.Clear();
+        }
+        
         public enum CampaignDisplayMode
         {
             Banner,           // Small banner at top/bottom
@@ -315,7 +331,21 @@ namespace BoostOps
             }
             
             string storeUrl = GetPlatformStoreUrl(campaign.target_project.store_urls);
-            
+
+            // On Windows/UWP, never send users to Google Play / App Store. Resolve a Microsoft
+            // Store destination (server URL if present, else synthesized from the Store ID).
+#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
+            storeUrl = BoostOpsStoreDetector.GetWindowsStoreUrl(campaign);
+#elif UNITY_EDITOR
+            var _activeTarget = UnityEditor.EditorUserBuildSettings.activeBuildTarget;
+            if (_activeTarget == UnityEditor.BuildTarget.WSAPlayer
+                || _activeTarget == UnityEditor.BuildTarget.StandaloneWindows
+                || _activeTarget == UnityEditor.BuildTarget.StandaloneWindows64)
+            {
+                storeUrl = BoostOpsStoreDetector.GetWindowsStoreUrl(campaign);
+            }
+#endif
+
             if (!string.IsNullOrEmpty(storeUrl))
             {
                 Debug.Log($"[BoostOpsCampaignDisplay] Opening store URL: {storeUrl}");
@@ -375,7 +405,7 @@ namespace BoostOps
                 return storeUrls.amazon;
             if (!string.IsNullOrEmpty(storeUrls.samsung))
                 return storeUrls.samsung;
-#elif UNITY_STANDALONE_WIN && !UNITY_EDITOR
+#elif (UNITY_STANDALONE_WIN || UNITY_WSA) && !UNITY_EDITOR
             if (!string.IsNullOrEmpty(storeUrls.microsoft))
                 return storeUrls.microsoft;
 #elif UNITY_EDITOR
@@ -396,7 +426,9 @@ namespace BoostOps
                 if (!string.IsNullOrEmpty(storeUrls.samsung))
                     return storeUrls.samsung;
             }
-            else if (buildTarget == UnityEditor.BuildTarget.StandaloneWindows || buildTarget == UnityEditor.BuildTarget.StandaloneWindows64)
+            else if (buildTarget == UnityEditor.BuildTarget.WSAPlayer
+                     || buildTarget == UnityEditor.BuildTarget.StandaloneWindows
+                     || buildTarget == UnityEditor.BuildTarget.StandaloneWindows64)
             {
                 if (!string.IsNullOrEmpty(storeUrls.microsoft))
                     return storeUrls.microsoft;
@@ -1480,13 +1512,16 @@ namespace BoostOps
             // Fall back to dynamic texture generation
             var campaignTheme = GetCampaignTheme(campaign.name);
             var texture = CreateThemedTexture(campaignTheme, format);
-            
+
             if (texture != null)
             {
                 var dynamicSprite = Sprite.Create(texture, new Rect(0, 0, texture.width, texture.height), new Vector2(0.5f, 0.5f));
+                // Track runtime-generated objects so OnDestroy can free them
+                _runtimeCreatedObjects.Add(texture);
+                _runtimeCreatedObjects.Add(dynamicSprite);
                 imageComponent.sprite = dynamicSprite;
                 imageComponent.color = Color.white; // Don't tint when using generated texture
-                
+
                 Debug.Log($"[BoostOpsCampaignDisplay] Created dynamic {format} for campaign '{campaign.name}'");
             }
             else

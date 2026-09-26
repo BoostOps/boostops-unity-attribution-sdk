@@ -351,13 +351,90 @@ public class Campaign
 - **Use case**: Unity Asset Store submission
 - **IP protection**: Maximum + professional presentation
 
+## 🪟 Windows / Microsoft Store Attribution
+
+The SDK reads the install-time campaign id from the Microsoft Store on cold
+starts and tags the next `first_open` event with the same `attribution_*`
+fields used for Android Play Install Referrer and iOS Apple Search Ads — so
+revenue rolls up by campaign automatically with zero host-app code.
+
+### Wire mapping
+
+| Field                       | Value                              |
+|-----------------------------|------------------------------------|
+| `attribution_source`        | `microsoft_store`                  |
+| `attribution_channel`       | `ua:microsoft_store`               |
+| `attribution_campaign_slug` | `<cid>` from the Store URL         |
+| `attribution_campaign`      | `<cid>` from the Store URL         |
+| `attribution_method`        | `deterministic`                    |
+| `touch_type`                | `click`                            |
+
+The campaign id is whatever you put in `?cid=` on your Store URL — for example
+`https://apps.microsoft.com/detail/<APP_ID>?cid=ms-search-brand-q4`.
+
+### Build target support
+
+| Build target                                        | Status                  | Setup                                                            |
+|-----------------------------------------------------|-------------------------|------------------------------------------------------------------|
+| **UWP** (`UNITY_WSA`)                               | ✅ Out of the box        | None                                                             |
+| **StandaloneWindows / StandaloneWindows64 → MSIX**  | ✅ Requires setup        | NuGet `Microsoft.Windows.SDK.Contracts` (≥ 10.0.19041) + define `ENABLE_WINMD_SUPPORT` |
+| **StandaloneWindows64 bare .exe**                   | ➖ Compiles, no-op       | N/A — no Store package identity available                        |
+| Other platforms (iOS, Android, macOS, Linux, WebGL) | ➖ Compiles, no-op       | None                                                             |
+
+### Setting it up for Standalone-MSIX builds
+
+1. Add the **Microsoft.Windows.SDK.Contracts** NuGet package to your Unity
+   project (any version `10.0.19041` or later). The simplest path is the
+   `NuGetForUnity` package, but `csproj-based` workflows work too.
+2. **(Automatic)** The SDK detects the NuGet on the next editor recompile and
+   adds `ENABLE_WINMD_SUPPORT` to the StandaloneWindows scripting defines for
+   you. No manual Player Settings edit required. (If you'd rather manage the
+   define yourself, the auto-sync only adds it when the NuGet is actually
+   present, so it's safe to leave.)
+3. Package the build as MSIX through the Microsoft Store partner-center
+   pipeline. Sideloaded MSIX builds and bare `.exe` builds will compile but
+   silently skip the Store campaign read.
+
+If you populate `microsoftStoreId` in `BoostOpsProjectSettings` but skip
+step 1, the SDK will fail your StandaloneWindows builds at preprocess time
+with a clear error pointing back at this section. The build will not proceed
+silently.
+
+### Verifying it works
+
+```csharp
+// Synchronously read whatever the SDK has cached from the Store API
+string cid = BoostOpsMicrosoftStoreCampaign.GetCachedCampaignId();
+Debug.Log($"MS Store campaign: '{cid}'");
+
+// Confirm the build can talk to WinRT at all
+Debug.Log($"MS Store reader supported: {BoostOpsMicrosoftStoreCampaign.IsSupportedOnThisBuild}");
+
+// Confirm package identity (Store vs sideload)
+Debug.Log($"Installed from MS Store: {BoostOpsEnvironment.IsMicrosoftStoreInstall()}");
+Debug.Log($"Environment: {BoostOpsEnvironment.GetEnvironment()}"); // -> "microsoft_store" or "standalone"
+```
+
+### Caveats
+
+- The Store only populates the campaign id for genuine Store installs — local
+  packaging tests will return empty. Generate a real Store URL with `?cid=...`
+  and install through that flow to see end-to-end attribution.
+- For users without a Microsoft account, the SDK falls back to the app
+  license JSON's `customPolicyField1` field, so signed-in vs anonymous installs
+  both attribute correctly.
+- The SDK caps the cold-start wait at 2 seconds (matching the Android Install
+  Referrer behavior). If `StoreContext` hasn't responded by then, the
+  `first_open` event ships as organic; on the next launch the cached campaign
+  is picked up if it landed late.
+
 ## 🛠️ Build Requirements
 
 ### **Development Environment**
 - **Unity**: 2019.4 LTS or newer
 - **Packages**: Unity Services Core, Unity Remote Config
 - **.NET**: Standard 2.1 compatibility
-- **Platforms**: iOS, Android support
+- **Platforms**: iOS, Android, Windows (UWP + Standalone-MSIX), macOS support
 
 ### **Production Build**
 - **.NET SDK**: 6.0 or newer for DLL compilation

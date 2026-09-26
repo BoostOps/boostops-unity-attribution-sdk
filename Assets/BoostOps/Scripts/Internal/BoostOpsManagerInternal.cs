@@ -1360,6 +1360,13 @@ namespace BoostOps.Internal
 
             Debug.Log($"[BoostOps Manager Internal] Opening store URL: {storeUrl}");
 
+#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
+            // Safety net: make sure a Microsoft Store link launches the Store app (protocol link)
+            // rather than opening apps.microsoft.com in the browser. Non-Microsoft URLs pass through.
+            storeUrl = BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(storeUrl, null) ?? storeUrl;
+            Debug.Log($"[BoostOps Manager Internal] Windows store URL (normalized): {storeUrl}");
+#endif
+
 #if UNITY_IOS && !UNITY_EDITOR
             // Check if this is an iOS App Store URL and native sheet is available
             if (storeUrl.Contains("apps.apple.com") && BoostOps.BoostOpsAppStoreSheet.IsAvailable())

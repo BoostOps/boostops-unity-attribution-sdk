@@ -566,7 +566,7 @@ namespace BoostOps
             return "Android";
 #elif UNITY_WEBGL
             return "WebGL";
-#elif UNITY_STANDALONE_WIN
+#elif UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT
             return "Windows";
 #elif UNITY_STANDALONE_OSX
             return "macOS";
@@ -658,9 +658,15 @@ namespace BoostOps
             if (string.IsNullOrEmpty(url))
                 return false;
             
-            // If no domains configured, accept any domain (backward compatibility)
+            // SECURITY: fail closed. With no configured domains any app on the
+            // device could fire deep links that this SDK would treat as valid
+            // attribution (spoofed campaign/click IDs). Developers must list
+            // their link domains in BoostOps project settings.
             if (configuredDomains == null || configuredDomains.Length == 0)
-                return true;
+            {
+                LogError($"Rejecting deep link '{url}' - no link domains configured. Add your domains in BoostOps project settings (Dynamic Links).");
+                return false;
+            }
             
             try
             {
@@ -683,8 +689,10 @@ namespace BoostOps
             }
             catch (Exception ex)
             {
-                LogError($"Error validating domain for URL '{url}': {ex.Message}");
-                return true; // If we can't validate, allow it (fail open)
+                // SECURITY: fail closed. A URL we cannot parse cannot be
+                // validated, so it must not be treated as a trusted link.
+                LogError($"Error validating domain for URL '{url}': {ex.Message} - rejecting link");
+                return false;
             }
         }
         
@@ -694,7 +702,7 @@ namespace BoostOps
         public string GetDomainValidationInfo(string url)
         {
             if (configuredDomains == null || configuredDomains.Length == 0)
-                return "No domains configured - accepting all";
+                return "No domains configured - rejecting all (fail closed)";
             
             try
             {

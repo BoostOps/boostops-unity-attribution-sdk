@@ -72,17 +72,21 @@ namespace BoostOps
             // On Android, check if APK is debuggable
             try
             {
-                using (AndroidJavaClass buildConfig = new AndroidJavaClass("android.os.Build"))
                 using (AndroidJavaClass unityClass = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
                 using (AndroidJavaObject activity = unityClass.GetStatic<AndroidJavaObject>("currentActivity"))
                 using (AndroidJavaObject packageManager = activity.Call<AndroidJavaObject>("getPackageManager"))
                 {
                     string packageName = activity.Call<string>("getPackageName");
-                    AndroidJavaObject packageInfo = packageManager.Call<AndroidJavaObject>("getPackageInfo", packageName, 0);
-                    AndroidJavaObject appInfo = packageInfo.Get<AndroidJavaObject>("applicationInfo");
-                    int flags = appInfo.Get<int>("flags");
-                    const int FLAG_DEBUGGABLE = 2;
-                    return (flags & FLAG_DEBUGGABLE) != 0;
+                    // Dispose every intermediate AndroidJavaObject — leaked JNI
+                    // global refs accumulate across calls and can exhaust the
+                    // JNI reference table.
+                    using (AndroidJavaObject packageInfo = packageManager.Call<AndroidJavaObject>("getPackageInfo", packageName, 0))
+                    using (AndroidJavaObject appInfo = packageInfo.Get<AndroidJavaObject>("applicationInfo"))
+                    {
+                        int flags = appInfo.Get<int>("flags");
+                        const int FLAG_DEBUGGABLE = 2;
+                        return (flags & FLAG_DEBUGGABLE) != 0;
+                    }
                 }
             }
             catch (Exception ex)

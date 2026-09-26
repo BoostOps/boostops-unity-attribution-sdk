@@ -907,7 +907,7 @@ namespace BoostOps
             return "Android";
 #elif UNITY_WEBGL
             return "WebGL";
-#elif UNITY_STANDALONE_WIN
+#elif UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT
             return "Windows";
 #elif UNITY_STANDALONE_OSX
             return "macOS";

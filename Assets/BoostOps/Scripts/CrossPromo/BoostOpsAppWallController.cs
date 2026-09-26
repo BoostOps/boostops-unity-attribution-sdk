@@ -91,7 +91,19 @@ namespace BoostOps.CrossPromo
                 Debug.LogWarning("[BoostOpsAppWallController] No apps provided to show");
                 return;
             }
-            
+
+            // Drop items with no resolvable store link for the current platform so we never render
+            // a dead tile (e.g. a cross-promo app with no Microsoft Store mapping on Windows).
+            int beforeFilter = apps.Count;
+            apps = apps.FindAll(a => a != null && !string.IsNullOrEmpty(a.GetStoreUrl()));
+            if (apps.Count != beforeFilter)
+                Debug.Log($"[BoostOpsAppWallController] Filtered {beforeFilter - apps.Count} app(s) with no store link for this platform ({apps.Count} remain)");
+            if (apps.Count == 0)
+            {
+                Debug.LogWarning("[BoostOpsAppWallController] No apps have a valid store link for this platform - not showing app wall");
+                return;
+            }
+
             currentApps = apps;
             
             // Show the UI first (must be active before creating tiles so coroutines work)

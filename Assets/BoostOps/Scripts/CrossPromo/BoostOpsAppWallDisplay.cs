@@ -330,7 +330,20 @@ namespace BoostOps
             }
             
             string storeUrl = GetPlatformStoreUrl(campaign.target_project.store_urls);
-            
+
+            // On Windows/UWP, resolve a Microsoft Store destination instead of Google/Apple.
+#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
+            storeUrl = BoostOpsStoreDetector.GetWindowsStoreUrl(campaign);
+#elif UNITY_EDITOR
+            var _at = UnityEditor.EditorUserBuildSettings.activeBuildTarget;
+            if (_at == UnityEditor.BuildTarget.WSAPlayer
+                || _at == UnityEditor.BuildTarget.StandaloneWindows
+                || _at == UnityEditor.BuildTarget.StandaloneWindows64)
+            {
+                storeUrl = BoostOpsStoreDetector.GetWindowsStoreUrl(campaign);
+            }
+#endif
+
             if (!string.IsNullOrEmpty(storeUrl))
             {
                 Application.OpenURL(storeUrl);
