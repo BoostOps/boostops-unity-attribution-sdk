@@ -1,0 +1,21 @@
+{
+    "name": "BoostOps",
+    "rootNamespace": "BoostOps",
+    "references": [
+        "UnityEngine.UI",
+        "Unity.Services.RemoteConfig",
+        "Unity.Services.Core",
+        "UnityEngine.Purchasing",
+        "Unity.Addressables",
+        "Unity.ResourceManager"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

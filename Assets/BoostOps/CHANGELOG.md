@@ -2,6 +2,28 @@
 
 All notable changes to the BoostOps Unity SDK will be documented in this file.
 
+## [1.2.1] - 2026-09-25
+
+### Added
+
+- **UPM (Unity Package Manager) installs now work.** The SDK ships assembly
+  definitions — `BoostOps` (runtime), `BoostOps.Editor` (editor), and
+  `BoostOps.Examples` — so installing via Git URL
+  (`https://github.com/BoostOps/boostops-unity-attribution-sdk.git?path=/Assets/BoostOps#v1.2.1`)
+  compiles correctly. Previously Unity silently skipped all package scripts
+  because none were covered by an assembly definition. Optional integrations
+  (Unity Remote Config, Firebase Remote Config, Unity IAP, Addressables)
+  resolve automatically when those packages are present and are ignored when
+  absent.
+- `com.unity.nuget.newtonsoft-json` is declared as a package dependency
+  (required by the editor tooling); UPM installs pull it in automatically.
+
+### Notes for existing `.unitypackage` / submodule users
+
+- SDK code now compiles into its own `BoostOps` assemblies instead of
+  `Assembly-CSharp`. No API changes; your calls into `BoostOpsSDK` continue to
+  work unchanged (the assemblies are auto-referenced).
+
 ## [1.2.0] - 2026-09-25
 
 ### Security

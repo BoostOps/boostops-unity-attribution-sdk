@@ -1,0 +1,17 @@
+{
+    "name": "BoostOps.Examples",
+    "rootNamespace": "BoostOps",
+    "references": [
+        "BoostOps",
+        "UnityEngine.UI"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
