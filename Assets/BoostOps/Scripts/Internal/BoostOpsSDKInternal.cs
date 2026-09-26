@@ -23,6 +23,15 @@ namespace BoostOps.Internal
         // Track if app has been opened before in this memory session (for cold vs warm detection)
         private static bool hasOpenedInCurrentSession = false;
         
+        // Single-shot guards for the launch app_open flow. Init() is idempotent,
+        // but these are defense in depth: no code path may ever start the
+        // app-open flow twice in one process, and no process may ever emit two
+        // is_first_session=true events (the backend saw duplicate first-opens
+        // arriving within half a second of each other from double-Init on
+        // older SDK builds).
+        private static bool _appOpenFlowStarted = false;
+        private static bool _firstSessionEventSent = false;
+        
         // Static state accessible from other DLL classes without referencing Public types
         private static MonoBehaviour _coroutineRunner;
         private static bool _sdkInitializedStatic = false;
@@ -73,6 +82,8 @@ namespace BoostOps.Internal
         public static void ResetStaticState()
         {
             hasOpenedInCurrentSession = false;
+            _appOpenFlowStarted = false;
+            _firstSessionEventSent = false;
             _sdkInitializedStatic = false;
             _sdkLocalModeStatic = false;
             _coroutineRunner = null;
@@ -546,6 +557,19 @@ namespace BoostOps.Internal
         {
             try
             {
+                // SINGLE-SHOT: the launch app_open flow must run at most once per
+                // process. Init() is idempotent, but on Android/Windows the flow
+                // includes an async wait (install referrer / MS Store campaign),
+                // and a second entry during that window would classify as first
+                // launch again (the flag isn't claimed until send) — producing
+                // two first_open events for one install seconds or less apart.
+                if (_appOpenFlowStarted)
+                {
+                    Debug.LogWarning("[BoostOpsSDKInternal] ⏭️ App open flow already started this session - ignoring duplicate trigger");
+                    return;
+                }
+                _appOpenFlowStarted = true;
+                
                 // Check if this is the first launch using consistent key
                 bool isFirstLaunch = PlayerPrefs.GetInt(BoostOpsPlayerPrefsKeys.FIRST_LAUNCH_TRACKED, 0) == 0;
                 
@@ -696,6 +720,29 @@ namespace BoostOps.Internal
         {
             try
             {
+                // CLAIM the first-open before emitting it. isFirstLaunch was
+                // classified before the (up to 2s) referrer/campaign wait, so
+                // re-check at send time and claim atomically: if any other path
+                // already sent a first-session event (this process or via the
+                // persisted flag), downgrade this event to a regular open
+                // instead of emitting a duplicate first_open.
+                if (isFirstLaunch)
+                {
+                    bool alreadyClaimed = _firstSessionEventSent
+                        || PlayerPrefs.GetInt(BoostOpsPlayerPrefsKeys.FIRST_LAUNCH_TRACKED, 0) == 1;
+                    if (alreadyClaimed)
+                    {
+                        Debug.LogWarning("[BoostOpsSDKInternal] ⏭️ First-session already claimed - sending as regular app_open");
+                        isFirstLaunch = false;
+                    }
+                    else
+                    {
+                        _firstSessionEventSent = true;
+                        PlayerPrefs.SetInt(BoostOpsPlayerPrefsKeys.FIRST_LAUNCH_TRACKED, 1);
+                        PlayerPrefs.Save();
+                    }
+                }
+                
                 // Check if a deep link was captured
                 string deeplinkUrl = BoostOps.BoostOpsDeepLinkProtection.CapturedDeepLink;
                 
@@ -730,18 +777,11 @@ namespace BoostOps.Internal
                 // Record that app_open was sent to prevent duplicate from lifecycle handlers
                 BoostOps.Analytics.BoostOpsAnalyticsClient.RecordAppOpenSent();
                 
-                if (isFirstLaunch)
-                {
-                    // Debug.Log($"[BoostOpsSDKInternal] ✅ First session app open event sent (includes install attribution)");
-                    
-                    // Mark as no longer first launch
-                    PlayerPrefs.SetInt(BoostOpsPlayerPrefsKeys.FIRST_LAUNCH_TRACKED, 1);
-                    PlayerPrefs.Save();
-                }
-                // else
-                // {
-                //     Debug.Log($"[BoostOpsSDKInternal] ✅ Regular app open event sent with launch_type={launchType}");
-                // }
+                // Note: FIRST_LAUNCH_TRACKED is claimed BEFORE the event is
+                // emitted (see top of this method) so no concurrent path can
+                // classify this install as first-launch again. The event itself
+                // is durable: it's persisted to disk at queue time and replayed
+                // with the same event_id, which the server dedupes.
             }
             catch (Exception ex)
             {

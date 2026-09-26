@@ -1466,7 +1466,7 @@ namespace BoostOps.Analytics
             
 #if UNITY_EDITOR
             // Editor only: Custom header for debugging (Unity Editor doesn't reliably send User-Agent)
-            request.SetRequestHeader("X-BoostOps-User-Agent", $"BoostOps-SDK/2.0.6 Unity/{Application.unityVersion}");
+            request.SetRequestHeader("X-BoostOps-User-Agent", $"BoostOps-SDK/{BoostOpsSDKVersion.VERSION} Unity/{Application.unityVersion}");
 #endif
             // Device builds: Unity automatically sends standard User-Agent
             // e.g., "UnityPlayer/2022.3.10f1 (iPhone; iOS 17.2; Scale/3.00)"

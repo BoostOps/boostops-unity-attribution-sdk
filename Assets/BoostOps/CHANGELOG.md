@@ -2,6 +2,24 @@
 
 All notable changes to the BoostOps Unity SDK will be documented in this file.
 
+## [1.2.2] - 2026-09-25
+
+### Fixed
+
+- **Duplicate first-open events.** The launch app-open flow is now single-shot
+  per process, and the first-launch flag is claimed *before* the
+  `is_first_session=true` event is emitted (previously it was written only
+  after the up-to-2s install-referrer / MS Store campaign wait, so a second
+  trigger inside that window also classified as first launch). If the
+  first-session slot is already claimed at send time, the event is downgraded
+  to a regular app open instead of duplicating first-open.
+- **SDK version is now reported truthfully.** The event context `sdk_version`,
+  the `X-BoostOps-User-Agent` header, and the remote-config handshake all
+  reported a hardcoded `2.0.6` on every release since 1.0; they now report the
+  real package version from a single constant that the release script bumps.
+  Backend note: all fielded 1.x builds identify themselves as "2.0.6" — that
+  string cannot be used to distinguish SDK versions in historical data.
+
 ## [1.2.1] - 2026-09-25
 
 ### Added

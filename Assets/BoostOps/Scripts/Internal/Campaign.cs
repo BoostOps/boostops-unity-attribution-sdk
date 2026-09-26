@@ -905,7 +905,7 @@ namespace BoostOps
         // SDK compatibility constants
         public static readonly string SUPPORTED_API_VERSION = "1.0.0";
         public static readonly string SUPPORTED_SCHEMA_VERSION = "1.0.0";
-        public static readonly string SDK_VERSION = "2.0.6";
+        public static readonly string SDK_VERSION = BoostOps.BoostOpsSDKVersion.VERSION;
         
         /// <summary>
         /// Parse campaigns from Remote Config JSON with version validation

@@ -1062,8 +1062,9 @@ namespace BoostOps.Analytics
         
         private static string GetSDKVersion()
         {
-            // SDK Version 2.0.6: Schema v6 with elapsed_realtime_ms + three-tier ID hierarchy + simplified install_id
-            return "2.0.6";
+            // Real release version (was hardcoded "2.0.6" for every build before
+            // 1.2.2, making SDK versions indistinguishable in backend data).
+            return BoostOpsSDKVersion.VERSION;
         }
         
         private static string GetCountryCode()
