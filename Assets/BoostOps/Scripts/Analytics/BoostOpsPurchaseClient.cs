@@ -31,7 +31,6 @@ namespace BoostOps.Analytics
     {
         #region Constants
 
-        private const string DEFAULT_PURCHASES_URL = "https://analytics.boostops.io/v1/purchases";
         private const string QUEUE_SUBDIR = "BoostOps/purchases";
         private const string QUEUE_FILE_EXT = ".json";
 
@@ -76,7 +75,7 @@ namespace BoostOps.Analytics
         #region State
 
         private string _projectKey;
-        private string _purchasesUrl = DEFAULT_PURCHASES_URL;
+        private string _purchasesUrl; // null = BoostOpsEndpoints.PurchasesUrl
         private string _queueDir;
         private bool _initialized;
 
@@ -133,7 +132,10 @@ namespace BoostOps.Analytics
             _projectKey = projectKey;
             if (!string.IsNullOrEmpty(purchasesUrl))
             {
-                _purchasesUrl = purchasesUrl;
+                if (BoostOpsEndpoints.IsAllowed(purchasesUrl))
+                    _purchasesUrl = purchasesUrl;
+                else
+                    BoostOpsLogger.LogError("Purchases", $"Rejected purchases URL '{purchasesUrl}' (must be https:// on a BoostOps host)");
             }
 
             EnsureQueueDir();
@@ -326,7 +328,10 @@ namespace BoostOps.Analytics
             attempt++;
             _attemptCount[queueKey] = attempt;
 
-            using (var request = BuildPostRequest(_purchasesUrl, json))
+            string url = BoostOpsEndpoints.HasCustomBaseUrl
+                ? BoostOpsEndpoints.PurchasesUrl
+                : (_purchasesUrl ?? BoostOpsEndpoints.PurchasesUrl);
+            using (var request = BuildPostRequest(url, json))
             {
                 yield return request.SendWebRequest();
 
@@ -334,6 +339,11 @@ namespace BoostOps.Analytics
                 bool networkError =
                     request.result == UnityWebRequest.Result.ConnectionError ||
                     request.result == UnityWebRequest.Result.DataProcessingError;
+                if (request.result == UnityWebRequest.Result.ConnectionError)
+                {
+                    _purchasesUrl = null;
+                    BoostOpsEndpoints.PurchasesUrlAfterConnectionFailure(url);
+                }
 
                 if (!networkError && code >= 200 && code < 300)
                 {

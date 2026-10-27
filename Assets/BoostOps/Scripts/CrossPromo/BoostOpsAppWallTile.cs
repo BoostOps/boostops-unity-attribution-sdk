@@ -238,15 +238,13 @@ namespace BoostOps.CrossPromo
             
             Debug.Log($"[BoostOpsAppWallTile] Install clicked for {currentApp.target_project_name}");
             
-            // Track click event
-            TrackClick();
-            
-            // Open store page
-            OpenStorePage();
+            string clickId = TrackClick();
+            OpenStorePage(clickId);
         }
         
-        private void TrackClick()
+        private string TrackClick()
         {
+            string clickId = BoostOpsStoreLauncher.NewClickId();
             try
             {
                 string sourceStoreId = BoostOpsAnalyticsContract.GetSourceStoreId();
@@ -274,7 +272,8 @@ namespace BoostOps.CrossPromo
                     position: currentPosition,
                     impressionId: impressionId, // ✨ Link to item's impression_id
                     impressionTimestamp: impressionTimestamp,
-                    containerImpressionId: containerImpressionId // ✨ Link to app wall container
+                    containerImpressionId: containerImpressionId, // ✨ Link to app wall container
+                    clickId: clickId
                 );
                 
                 Debug.Log($"[BoostOpsAppWallTile] Tracked click - {currentApp.target_project_name} (campaign_slug: {campaignSlug}, source: {sourceStoreId} -> target: {targetStoreId})");
@@ -283,9 +282,10 @@ namespace BoostOps.CrossPromo
             {
                 Debug.LogError($"[BoostOpsAppWallTile] Failed to track click: {ex.Message}");
             }
+            return clickId;
         }
         
-        private void OpenStorePage()
+        private void OpenStorePage(string clickId)
         {
             string storeUrl = currentApp.GetStoreUrl();
             
@@ -295,20 +295,17 @@ namespace BoostOps.CrossPromo
                 return;
             }
             
+            string campaignSlug = string.IsNullOrEmpty(currentApp.campaign_slug)
+                ? $"app_wall_item_{currentApp.target_project_id}"
+                : currentApp.campaign_slug;
 #if UNITY_IOS && !UNITY_EDITOR
-            // Try native iOS store sheet first
-            string storeId = currentApp.GetStoreId();
-            if (!string.IsNullOrEmpty(storeId) && BoostOps.BoostOpsAppStoreSheet.IsAvailable())
-            {
-                Debug.Log($"[BoostOpsAppWallTile] Opening iOS store sheet: {storeId}");
-                BoostOps.BoostOpsAppStoreSheet.ShowAppStoreSheet(storeId);
-                return;
-            }
+            string appleId = currentApp.GetStoreId();
+#else
+            string appleId = null;
 #endif
-            
-            // Fallback to opening URL
-            Debug.Log($"[BoostOpsAppWallTile] Opening store URL: {storeUrl}");
-            Application.OpenURL(storeUrl);
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaignSlug, currentPlacement, "xpromo",
+                currentApp.GetStoreId(), currentApp.target_project_id), appleId);
         }
         
         /// <summary>

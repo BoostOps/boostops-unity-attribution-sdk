@@ -11,7 +11,7 @@ using BoostOps.Internal;
 namespace BoostOps.Analytics
 {
     /// <summary>
-    /// HTTP client for sending analytics events to analytics.boostops.io
+    /// HTTP client for sending analytics events to the BoostOps ingest host (see BoostOpsEndpoints)
     /// Simple, focused API with project key authentication and retry logic
     /// Uses single endpoint URL from configuration for maximum routing flexibility
     /// 
@@ -27,10 +27,6 @@ namespace BoostOps.Analytics
     public class BoostOpsAnalyticsClient
     {
         #region Configuration
-        
-        private const string PRODUCTION_BASE_URL = "https://analytics.boostops.io";
-        private const string DEVELOPMENT_BASE_URL = "https://analytics-dev.boostops.io";
-        private const string DEFAULT_EVENTS_URL = "https://analytics.boostops.io/v1/events";
         
         // Persisted-event queue (full payloads, survives process kill).
         // Mirrors the retry-until-acked pattern used by BoostOpsPurchaseClient.
@@ -151,7 +147,7 @@ namespace BoostOps.Analytics
                     // Initialize with project key and default endpoint
                     // Remote config will determine if events are actually sent or discarded
                     _projectKey = settings.ProjectKey;
-                    _eventsUrl = DEFAULT_EVENTS_URL;
+                    _eventsUrl = BoostOpsEndpoints.EventsUrl;
                     _isDevelopmentMode = false; // Not used anymore - JSON logging happens for all events
                 }
                 else
@@ -171,7 +167,7 @@ namespace BoostOps.Analytics
         /// Initialize the analytics client with project key (simplified authentication)
         /// </summary>
         /// <param name="projectKey">Project key (starts with bo_live_ or bo_test_)</param>
-        /// <param name="endpointUrl">Full endpoint URL (e.g., https://analytics.boostops.io/v1/events)</param>
+        /// <param name="endpointUrl">Full endpoint URL (e.g., https://events.boostopssdk.com/v1/events)</param>
         /// <param name="isDevelopmentMode">Use development mode</param>
         public void Initialize(string projectKey, string endpointUrl, bool isDevelopmentMode = false)
         {
@@ -193,17 +189,21 @@ namespace BoostOps.Analytics
                 BoostOpsLogger.LogWarning("Analytics", "Project key format may be incorrect. Expected format: bo_{env}_{publicProjectId}_{randomSuffix}\nExample: bo_live_p7q9K2z_1f4ac6d8e7b3c2d1");
             }
             
-            // SECURITY: Only accept HTTPS endpoints on *.boostops.io. This guards
+            // SECURITY: Only accept HTTPS endpoints on BoostOps device hosts. This guards
             // against a compromised/misconfigured remote config (or any internal
             // caller) redirecting events + project key to an arbitrary host.
-            if (!IsAllowedEndpointUrl(endpointUrl))
+            if (BoostOpsEndpoints.HasCustomBaseUrl)
             {
-                BoostOpsLogger.LogError("Analytics", $"Rejected endpoint URL '{endpointUrl}' (must be https:// on a boostops.io host). Keeping '{DEFAULT_EVENTS_URL}'.");
-                endpointUrl = DEFAULT_EVENTS_URL;
+                endpointUrl = BoostOpsEndpoints.EventsUrl;
+            }
+            else if (!IsAllowedEndpointUrl(endpointUrl))
+            {
+                BoostOpsLogger.LogError("Analytics", $"Rejected endpoint URL '{endpointUrl}' (must be https:// on a BoostOps host). Using '{BoostOpsEndpoints.EventsUrl}'.");
+                endpointUrl = BoostOpsEndpoints.EventsUrl;
             }
             
             _projectKey = projectKey;
-            _eventsUrl = endpointUrl; // Full endpoint URL (e.g., https://analytics.boostops.io/v1/events)
+            _eventsUrl = endpointUrl; // Full endpoint URL (e.g., https://events.boostopssdk.com/v1/events)
             _isDevelopmentMode = isDevelopmentMode;
             
             // Extract and log environment information
@@ -347,24 +347,57 @@ namespace BoostOps.Analytics
         }
         
         /// <summary>
-        /// Endpoint allowlist: HTTPS only, and the host must be boostops.io or
-        /// a subdomain of it. Applied to every endpoint override (constructor
-        /// default, Initialize() callers, remote config, server responses).
+        /// Endpoint allowlist (see <see cref="BoostOpsEndpoints.IsAllowed"/>). Applied to
+        /// every endpoint override (Initialize() callers, remote config, server responses).
         /// </summary>
         internal static bool IsAllowedEndpointUrl(string url)
         {
-            if (string.IsNullOrEmpty(url))
-                return false;
+            return BoostOpsEndpoints.IsAllowed(url);
+        }
+        
+        /// <summary>
+        /// Pin device traffic to a developer-supplied endpoint; server overrides are ignored while pinned.
+        /// </summary>
+        internal void ApplyCustomEndpoint()
+        {
+            _eventsUrl = BoostOpsEndpoints.EventsUrl;
+        }
+        
+        /// <summary>
+        /// Serialize a batch. IDFA is set only for the duration of serialization, so in-memory
+        /// and persisted copies never hold it and a retry re-evaluates the route.
+        /// </summary>
+        private string BuildBatchJson(List<AnalyticsEventData> events, string trackingIdfa)
+        {
+            foreach (var e in events)
+                if (e.context != null) e.context.idfa = trackingIdfa;
+            try
+            {
+                return "{\"events\":[" + string.Join(",", events.Select(e => CreateCleanJsonString(e)).ToArray()) + "]}";
+            }
+            finally
+            {
+                foreach (var e in events)
+                    if (e.context != null) e.context.idfa = null;
+            }
+        }
+
+        private static string RedactIdfa(string json, string idfa)
+        {
+            return string.IsNullOrEmpty(idfa) || json == null ? json : json.Replace(idfa, "<idfa redacted>");
+        }
+        
+        private void HandleConnectionFailure(string failedUrl, UnityWebRequest.Result result)
+        {
+            if (result != UnityWebRequest.Result.ConnectionError || failedUrl != _eventsUrl)
+                return;
             
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-                return false;
-            
-            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
-                return false;
-            
-            var host = uri.Host;
-            return string.Equals(host, "boostops.io", StringComparison.OrdinalIgnoreCase)
-                || host.EndsWith(".boostops.io", StringComparison.OrdinalIgnoreCase);
+            string next = BoostOpsEndpoints.EventsUrlAfterConnectionFailure(failedUrl);
+            if (next != _eventsUrl)
+            {
+                BoostOpsLogger.LogWarning("Analytics", $"🔀 Connection to {failedUrl} failed - failing over to {next}");
+                _eventsUrl = next;
+            }
         }
         
         /// <summary>
@@ -385,6 +418,7 @@ namespace BoostOps.Analytics
                 _instance = null;
                 _lastAppOpenTime = 0f;
             }
+            BoostOpsEndpoints.ResetStaticState();
         }
         
         /// <summary>
@@ -393,12 +427,12 @@ namespace BoostOps.Analytics
         /// </summary>
         internal void UpdateEndpoint(string endpointUrl)
         {
-            if (string.IsNullOrEmpty(endpointUrl) || endpointUrl == _eventsUrl)
+            if (string.IsNullOrEmpty(endpointUrl) || endpointUrl == _eventsUrl || BoostOpsEndpoints.HasCustomBaseUrl)
                 return;
             
             if (!IsAllowedEndpointUrl(endpointUrl))
             {
-                BoostOpsLogger.LogWarning("Analytics", $"Ignoring server endpoint override '{endpointUrl}' (must be https:// on a boostops.io host)");
+                BoostOpsLogger.LogWarning("Analytics", $"Ignoring server endpoint override '{endpointUrl}' (must be https:// on a BoostOps host)");
                 return;
             }
             
@@ -615,7 +649,8 @@ namespace BoostOps.Analytics
         private System.Collections.IEnumerator SendBatchCoroutineWithResult(List<AnalyticsEventData> events, Action<(bool success, bool shouldRetry)> onResult)
         {
             UnityWebRequest request = null;
-            var url = _eventsUrl;
+            var trackingIdfa = BoostOpsEndpoints.TrackingRouteIdfa();
+            var url = trackingIdfa != null ? BoostOpsEndpoints.TrackingEventsUrl : _eventsUrl;
             
             // Generate fresh nonce for each event (per-attempt, for replay attack prevention)
             foreach (var evt in events)
@@ -627,13 +662,12 @@ namespace BoostOps.Analytics
             string jsonData = null;
             try
             {
-                var cleanJsonEvents = events.Select(e => CreateCleanJsonString(e)).ToArray();
-                jsonData = "{\"events\":[" + string.Join(",", cleanJsonEvents) + "]}";
+                jsonData = BuildBatchJson(events, trackingIdfa);
                 
                 var eventTypes = string.Join(", ", events.Select(e => e.event_type));
                 // PRIVACY: full payloads (identifiers, receipts, deep links) are
                 // only logged when runtime debug logging is explicitly enabled.
-                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
+                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{RedactIdfa(jsonData, trackingIdfa)}");
                 
                 request = CreatePostRequest(url, jsonData);
             }
@@ -664,6 +698,7 @@ namespace BoostOps.Analytics
                 {
                     bool shouldRetry = IsRetryableError(request.responseCode, request.result);
                     Debug.LogError($"[BoostOps Analytics] ❌ {request.responseCode} {request.error} | {responseBody}{(shouldRetry ? "" : " [NON-RETRYABLE]")}");
+                    HandleConnectionFailure(url, request.result);
                     
                     HandleServerResponse(request.responseCode, request.downloadHandler?.text);
                     onResult?.Invoke((false, shouldRetry));
@@ -723,19 +758,19 @@ namespace BoostOps.Analytics
         {
             UnityWebRequest request = null;
             
-            var url = _eventsUrl;
+            var trackingIdfa = BoostOpsEndpoints.TrackingRouteIdfa();
+            var url = trackingIdfa != null ? BoostOpsEndpoints.TrackingEventsUrl : _eventsUrl;
             
             // Create clean JSON payload without empty fields (outside try-catch for safety)
             string jsonData = null;
             try
             {
-                var cleanJsonEvents = events.Select(e => CreateCleanJsonString(e)).ToArray();
-                jsonData = "{\"events\":[" + string.Join(",", cleanJsonEvents) + "]}";
+                jsonData = BuildBatchJson(events, trackingIdfa);
                 
                 var eventTypes = string.Join(", ", events.Select(e => e.event_type));
                 // PRIVACY: full payloads (identifiers, receipts, deep links) are
                 // only logged when runtime debug logging is explicitly enabled.
-                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
+                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{RedactIdfa(jsonData, trackingIdfa)}");
                 
                 request = CreatePostRequest(url, jsonData);
             }
@@ -757,6 +792,7 @@ namespace BoostOps.Analytics
                 else
                 {
                     Debug.LogError($"[BoostOps Analytics] ❌ {request.responseCode} {request.error} | {responseBody}");
+                    HandleConnectionFailure(url, request.result);
                 }
             }
             catch (Exception ex)
@@ -786,7 +822,8 @@ namespace BoostOps.Analytics
         {
             UnityWebRequest request = null;
             
-            var url = _eventsUrl;
+            var trackingIdfa = BoostOpsEndpoints.TrackingRouteIdfa();
+            var url = trackingIdfa != null ? BoostOpsEndpoints.TrackingEventsUrl : _eventsUrl;
             
             // Generate fresh nonce for each event (per-attempt, for replay attack prevention)
             foreach (var evt in events)
@@ -798,13 +835,12 @@ namespace BoostOps.Analytics
             string jsonData = null;
             try
             {
-                var cleanJsonEvents = events.Select(e => CreateCleanJsonString(e)).ToArray();
-                jsonData = "{\"events\":[" + string.Join(",", cleanJsonEvents) + "]}";
+                jsonData = BuildBatchJson(events, trackingIdfa);
                 
                 var eventTypes = string.Join(", ", events.Select(e => e.event_type));
                 // PRIVACY: full payloads (identifiers, receipts, deep links) are
                 // only logged when runtime debug logging is explicitly enabled.
-                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{jsonData}");
+                BoostOpsLogger.LogDebug("Analytics", $"📤 POST {url} | {events.Count} event(s): [{eventTypes}]\n{RedactIdfa(jsonData, trackingIdfa)}");
                 
                 request = CreatePostRequest(url, jsonData);
             }
@@ -848,6 +884,7 @@ namespace BoostOps.Analytics
                 {
                     var responseBody = request.downloadHandler?.text ?? "(empty)";
                     Debug.LogError($"[BoostOps Analytics] ❌ {request.responseCode} {request.error} | {responseBody}");
+                    HandleConnectionFailure(url, request.result);
                     
                     HandleServerResponse(request.responseCode, request.downloadHandler?.text);
                     SafeInvokeCallback(() => onComplete?.Invoke(false, null));
@@ -1383,12 +1420,10 @@ namespace BoostOps.Analytics
             }
             
             // Device identifiers (hashed)
-            if (!string.IsNullOrEmpty(eventData.idfa_hash)) eventParts.Add(S("idfa_hash", eventData.idfa_hash));
             if (!string.IsNullOrEmpty(eventData.idfv_hash)) eventParts.Add(S("idfv_hash", eventData.idfv_hash));
             if (!string.IsNullOrEmpty(eventData.gaid_hash)) eventParts.Add(S("gaid_hash", eventData.gaid_hash));
             if (!string.IsNullOrEmpty(eventData.android_id_hash)) eventParts.Add(S("android_id_hash", eventData.android_id_hash));
             if (!string.IsNullOrEmpty(eventData.custom_user_id)) eventParts.Add(S("custom_user_id", eventData.custom_user_id));
-            if (!string.IsNullOrEmpty(eventData.fingerprint_hash)) eventParts.Add(S("fingerprint_hash", eventData.fingerprint_hash));
             
             // App Wall specific: Serialize items array (nested item impression data)
             if (eventData.items != null && eventData.items.Count > 0)
@@ -1911,7 +1946,8 @@ namespace BoostOps.Analytics
                     continue;
                 
                 var jsonData = "{\"events\":[" + string.Join(",", payloads) + "]}";
-                var request = CreatePostRequest(_eventsUrl, jsonData);
+                var replayUrl = BoostOpsEndpoints.TrackingRouteIdfa() != null ? BoostOpsEndpoints.TrackingEventsUrl : _eventsUrl;
+                var request = CreatePostRequest(replayUrl, jsonData);
                 
                 yield return request.SendWebRequest();
                 
@@ -1941,6 +1977,7 @@ namespace BoostOps.Analytics
                     {
                         // Transient failure — keep files for the next launch.
                         BoostOpsLogger.LogDebug("Analytics", $"Replay failed transiently ({request.responseCode}) - will retry next launch");
+                        HandleConnectionFailure(replayUrl, request.result);
                         yield break;
                     }
                 }

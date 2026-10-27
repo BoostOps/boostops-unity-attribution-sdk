@@ -216,12 +216,10 @@ namespace BoostOps.Analytics
             // Purchase specific - removed user_ltv_micros as it doesn't exist in schema
             
             // Device identifiers (only if not empty)
-            if (!string.IsNullOrEmpty(eventData.idfa_hash)) cleaned.idfa_hash = eventData.idfa_hash;
             if (!string.IsNullOrEmpty(eventData.idfv_hash)) cleaned.idfv_hash = eventData.idfv_hash;
             if (!string.IsNullOrEmpty(eventData.gaid_hash)) cleaned.gaid_hash = eventData.gaid_hash;
             if (!string.IsNullOrEmpty(eventData.android_id_hash)) cleaned.android_id_hash = eventData.android_id_hash;
             if (!string.IsNullOrEmpty(eventData.custom_user_id)) cleaned.custom_user_id = eventData.custom_user_id;
-            if (!string.IsNullOrEmpty(eventData.fingerprint_hash)) cleaned.fingerprint_hash = eventData.fingerprint_hash;
             
             // Clean nested objects only if they have meaningful content
             // Note: consent is now handled at the top-level event data

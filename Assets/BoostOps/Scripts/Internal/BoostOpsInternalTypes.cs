@@ -70,7 +70,8 @@ namespace BoostOps.Internal
         public bool UseRemoteManagement { get; set; } = false;
         // BoostOps Analytics derived from UseRemoteManagement (enabled when using remote management)
         public bool BoostOpsAnalytics => UseRemoteManagement;
-        public string IngestUrl { get; set; } = "https://analytics.boostops.io/v1";
+        public string IngestUrl { get; set; } = "https://events.boostopssdk.com/v1";
+        public bool AttTracking { get; set; } = false;
         public bool FirebaseAnalytics { get; set; } = false;
         public bool UnityAnalytics { get; set; } = false;
         public string AppleAppStoreId { get; set; } = "";
@@ -126,7 +127,11 @@ namespace BoostOps.Internal
                 
                 var ingestUrlField = settingsType.GetField("ingestUrl");
                 if (ingestUrlField != null)
-                    result.IngestUrl = ingestUrlField.GetValue(externalSettings) as string ?? "https://analytics.boostops.io/v1";
+                    result.IngestUrl = ingestUrlField.GetValue(externalSettings) as string ?? "https://events.boostopssdk.com/v1";
+                
+                var attTrackingField = settingsType.GetField("attTracking");
+                if (attTrackingField != null)
+                    result.AttTracking = (bool)(attTrackingField.GetValue(externalSettings) ?? false);
                 
                 var firebaseAnalyticsField = settingsType.GetField("firebaseAnalytics");
                 if (firebaseAnalyticsField != null)

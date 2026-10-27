@@ -725,7 +725,7 @@ namespace BoostOps
         
         // Properties with safe defaults
         public bool IsEnabled => enabled && !kill_switch;
-        public string Endpoint => endpoint ?? "https://analytics.boostops.io/v1";
+        public string Endpoint => endpoint ?? "https://events.boostopssdk.com/v1";
         public string MinSdkVersion => min_sdk_version ?? "0.0.0";
         public int[] AcceptedSchemaVersions => accepted_schema_versions ?? new int[] { 1 };
         public int BackoffSeconds => Math.Max(backoff_seconds, 300);   // Minimum 5 min backoff

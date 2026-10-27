@@ -246,11 +246,8 @@ namespace BoostOps.CrossPromo
         {
             Debug.Log($"[BoostOpsAppWallController] App clicked: {app.target_project_name} at position {position}");
             
-            // Track click
-            TrackAppWallClick(app, position);
-            
-            // Open store page
-            OpenStorePage(app);
+            string clickId = TrackAppWallClick(app, position);
+            OpenStorePage(app, clickId);
         }
         
         private void TrackAppWallImpression()
@@ -318,8 +315,9 @@ namespace BoostOps.CrossPromo
             }
         }
         
-        private void TrackAppWallClick(BoostOps.Core.AppWallApp app, int position)
+        private string TrackAppWallClick(BoostOps.Core.AppWallApp app, int position)
         {
+            string clickId = BoostOpsStoreLauncher.NewClickId();
             try
             {
                 string sourceStoreId = BoostOpsAnalyticsContract.GetSourceStoreId();
@@ -344,7 +342,11 @@ namespace BoostOps.CrossPromo
                     targetProjectId: app.target_project_id,
                     format: "app_wall",
                     channel: "xpromo",
-                    position: position
+                    position: position,
+                    impressionId: itemImpressionIds.TryGetValue(campaignSlug, out var itemImpressionId) ? itemImpressionId : null,
+                    impressionTimestamp: itemImpressionTimestamps.TryGetValue(campaignSlug, out var itemImpressionTs) ? itemImpressionTs : (long?)null,
+                    containerImpressionId: containerImpressionId,
+                    clickId: clickId
                 );
                 
                 Debug.Log($"[BoostOpsAppWallController] Tracked app_wall_click - {app.target_project_name} at position {position} (campaign_slug: {campaignSlug}, source: {sourceStoreId} -> target: {targetStoreId})");
@@ -353,6 +355,7 @@ namespace BoostOps.CrossPromo
             {
                 Debug.LogError($"[BoostOpsAppWallController] Failed to track click: {ex.Message}");
             }
+            return clickId;
         }
         
         private void UpdateLayoutForOrientation()
@@ -390,7 +393,7 @@ namespace BoostOps.CrossPromo
                      $"Panel Size: {contentPanel?.sizeDelta}");
         }
         
-        private void OpenStorePage(BoostOps.Core.AppWallApp app)
+        private void OpenStorePage(BoostOps.Core.AppWallApp app, string clickId)
         {
             string storeUrl = app.GetStoreUrl();
             
@@ -400,20 +403,17 @@ namespace BoostOps.CrossPromo
                 return;
             }
             
+            string campaignSlug = string.IsNullOrEmpty(app.campaign_slug)
+                ? $"app_wall_item_{app.target_project_id}"
+                : app.campaign_slug;
 #if UNITY_IOS && !UNITY_EDITOR
-            // Try native iOS store sheet first
-            string storeId = app.GetStoreId();
-            if (!string.IsNullOrEmpty(storeId) && BoostOps.BoostOpsAppStoreSheet.IsAvailable())
-            {
-                Debug.Log($"[BoostOpsAppWallController] Opening iOS store sheet for: {storeId}");
-                BoostOps.BoostOpsAppStoreSheet.ShowAppStoreSheet(storeId);
-                return;
-            }
+            string appleId = app.GetStoreId();
+#else
+            string appleId = null;
 #endif
-            
-            // Fallback to opening URL
-            Debug.Log($"[BoostOpsAppWallController] Opening store URL: {storeUrl}");
-            Application.OpenURL(storeUrl);
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaignSlug, placement, "xpromo",
+                app.GetStoreId(), app.target_project_id), appleId);
         }
         
         private void OnDestroy()

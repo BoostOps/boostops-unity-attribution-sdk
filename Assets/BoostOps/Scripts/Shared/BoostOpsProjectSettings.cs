@@ -34,7 +34,21 @@ namespace BoostOps
         public string projectKey = "";  // (project-level key)
         
         [Tooltip("BoostOps event ingest endpoint URL (always production)")]
-        public string ingestUrl = "https://analytics.boostops.io/v1";
+        public string ingestUrl = "https://events.boostopssdk.com/v1";
+        
+        [Tooltip("iOS direct-deal attribution. When on, users who grant ATT are sent (with IDFA) to the tracking host att-events.boostopssdk.com, and the SDK privacy manifest declares tracking. Your App Store privacy label must then list \"Data Used to Track You\" and the app must show the ATT prompt.")]
+        public bool attTracking = false;
+        
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+            if (!string.IsNullOrEmpty(ingestUrl) && !BoostOps.Analytics.BoostOpsEndpoints.IsAllowed(ingestUrl))
+            {
+                ingestUrl = "https://events.boostopssdk.com/v1";
+                UnityEditor.EditorUtility.SetDirty(this);
+            }
+        }
+#endif
         
         [Header("Analytics Event Logging")]
         // NOTE: BoostOps Analytics is automatically enabled/disabled based on useRemoteManagement
@@ -161,6 +175,7 @@ namespace BoostOps
                     newSettings.androidCertFingerprint = currentSettings.androidCertFingerprint;
                     newSettings.fallbackUrl = currentSettings.fallbackUrl;
                     newSettings.ingestUrl = currentSettings.ingestUrl;
+                    newSettings.attTracking = currentSettings.attTracking;
                 }
                 
 #if UNITY_EDITOR
@@ -198,6 +213,7 @@ namespace BoostOps
                     fallbackSettings.androidCertFingerprint = currentSettings.androidCertFingerprint;
                     fallbackSettings.fallbackUrl = currentSettings.fallbackUrl;
                     fallbackSettings.ingestUrl = currentSettings.ingestUrl;
+                    fallbackSettings.attTracking = currentSettings.attTracking;
                 }
                 _instance = fallbackSettings;
                 return fallbackSettings;

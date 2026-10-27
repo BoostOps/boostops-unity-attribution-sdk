@@ -2,6 +2,53 @@
 
 All notable changes to the BoostOps Unity SDK will be documented in this file.
 
+## [1.2.3] - 2026-10-27
+
+### Changed
+
+- **New SDK-only domain.** Device traffic now goes to `boostopssdk.com`, one
+  subdomain per service: `events.boostopssdk.com/v1/events` and
+  `purchases.boostopssdk.com/v1/purchases`. `analytics.boostops.io` is no longer
+  used; a saved `ingestUrl` pointing at it is migrated automatically. The server
+  (or `SetCustomEndpoint`) may only redirect traffic to `*.boostopssdk.com`.
+- **`SetCustomEndpoint` works.** It pins events and purchases to an allowlisted
+  HTTPS host; passing null clears the pin.
+- **One click id per click.** Every cross-promo / direct-deal click path mints a
+  single `click_id`, uses it in the click event and in the store link (Play
+  `referrer`), and persists the click before the store opens.
+- **iOS elapsed time** is measured from app launch instead of device boot
+  (Apple required-reason API 35F9.1).
+
+### Added
+
+- **`attTracking` project setting (iOS direct deals, default off).** When on,
+  events from users who granted ATT are sent with the IDFA to
+  `att-events.boostopssdk.com`; everyone else stays on `events.` with no IDFA.
+  The route is chosen per send, so a later grant or revoke applies immediately.
+  Purchases never carry the IDFA. Turning this on requires the ATT prompt,
+  `NSUserTrackingUsageDescription`, and "Data Used to Track You" in the App
+  Store privacy label.
+- **Privacy manifest** (`Plugins/iOS/PrivacyInfo.xcprivacy`). Declares no
+  tracking by default; an iOS build step rewrites it to declare tracking with
+  `att-events.boostopssdk.com` as the only tracking domain when `attTracking` is on.
+
+### Fixed
+
+- `GetIDFA()` always returned null unless Unity's iOS 14 Support package was
+  installed.
+- The native iOS plugin no longer logs the raw IDFA; debug payload logs redact it.
+
+### Removed
+
+- `idfa_hash` / `fingerprint_hash` fields and the unused
+  `BoostOpsInstallAttribution` component.
+
+### Known limitation
+
+- If the ATT prompt is shown after BoostOps sends the first launch, that
+  install carries no IDFA. For iOS direct deals, show the ATT prompt before
+  BoostOps initializes.
+
 ## [1.2.2] - 2026-09-25
 
 ### Fixed

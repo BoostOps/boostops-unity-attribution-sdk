@@ -109,7 +109,7 @@ namespace BoostOps
         /// Note: unlike Android's Play install referrer, the Microsoft Store does NOT pass this
         /// value through to the freshly installed app, so it only drives Store-side campaign
         /// reporting - BoostOps install attribution on Windows still relies on the click event
-        /// (TrackClick) plus fingerprint matching, as on iOS.
+        /// (TrackClick) and deterministic signals.
         /// </summary>
         public static string AppendMicrosoftCampaignId(string url, string campaignId)
         {

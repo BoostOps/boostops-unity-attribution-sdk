@@ -85,7 +85,12 @@ namespace BoostOps.Analytics
             {
                 SchemaVersion     = 7,
                 TimestampMs       = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+#if UNITY_IOS && !UNITY_EDITOR
+                // Apple (35F9.1): boot time may not leave the device; elapsed time between in-app events may.
+                ElapsedRealtimeMs = BoostOpsDeviceInfo.GetElapsedSinceLaunchMilliseconds(),
+#else
                 ElapsedRealtimeMs = BoostOpsDeviceInfo.GetElapsedRealtimeMilliseconds(),
+#endif
                 EventId           = Guid.NewGuid().ToString("N"),
 
                 BoostOpsId        = GetIdentifierValue(identifiers, "boostops_id"),

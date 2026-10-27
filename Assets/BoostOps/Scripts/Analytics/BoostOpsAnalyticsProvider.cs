@@ -21,7 +21,6 @@ namespace BoostOps
         // ✅ HARDCODED DEFAULT ENDPOINT (Industry Standard - Fail-Open)
         // This ensures SDK always works, even without remote config
         // Server can override via app_open response
-        private const string DEFAULT_ANALYTICS_ENDPOINT = "https://analytics.boostops.io/v1/events";
         
         // ✅ RUNTIME KILL SWITCH (Server Control)
         // Set by server response (app_open) to disable/enable analytics
@@ -125,7 +124,7 @@ namespace BoostOps
             }
             
             // Update endpoint if provided. UpdateEndpoint enforces the
-            // HTTPS + boostops.io allowlist before applying.
+            // device-host allowlist before applying.
             if (!string.IsNullOrEmpty(endpoint))
             {
                 BoostOps.Analytics.BoostOpsAnalyticsClient.ExistingInstance?.UpdateEndpoint(endpoint);
@@ -184,7 +183,7 @@ namespace BoostOps
 
                 // ✅ FAIL-OPEN: Always use default endpoint
                 // Remote config can override later via app_open response
-                string endpointUrl = DEFAULT_ANALYTICS_ENDPOINT;
+                string endpointUrl = BoostOps.Analytics.BoostOpsEndpoints.EventsUrl;
                 
                 // Try to get endpoint from remote config (optional override)
                 var analyticsConfig = GetAnalyticsConfigFromRemote();
@@ -210,7 +209,7 @@ namespace BoostOps
                 BoostOps.Analytics.BoostOpsAnalyticsClient.Instance.Initialize(
                     settings.ProjectKey,
                     endpointUrl,  // Uses remote config endpoint or default editor endpoint
-                    isDevelopmentMode: true  // TEMPORARY: Enable to debug server response
+                    isDevelopmentMode: false
                 );
 
                 // NOTE: Accepted schema versions are now only read from event responses (not remote config)
@@ -301,6 +300,7 @@ namespace BoostOps
             
             // Extract container impression ID (for app walls)
             var containerImpressionId = parameters.TryGetValue("container_impression_id", out var contId) ? contId : null;
+            var clickId = parameters.TryGetValue("click_id", out var cid) && !string.IsNullOrEmpty(cid) ? cid : null;
             
             // Debug log for impression linkage
             if (!string.IsNullOrEmpty(impressionId))
@@ -335,7 +335,8 @@ namespace BoostOps
                 targetStoreId, targetProjectId,
                 networkCampaignId, deepLinkUrl, null, null, null, format, channel,
                 impressionId, impressionTimestamp, // CRITICAL: Link click back to impression for attribution
-                containerImpressionId // Link to app wall container (if applicable)
+                containerImpressionId, // Link to app wall container (if applicable)
+                clickId // Same id the store referrer carries
             );
             
             // Always queue the event first

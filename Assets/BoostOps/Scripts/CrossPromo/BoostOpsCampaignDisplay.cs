@@ -237,10 +237,10 @@ namespace BoostOps
                 Debug.Log($"[BoostOps] Campaign clicked: {currentCampaign?.name}");
                 
                 // Track click analytics - route to Firebase/Unity Analytics in local mode, BoostOps in server mode
-                TrackCampaignClick(currentCampaign);
+                string clickId = TrackCampaignClick(currentCampaign);
                 
                 // Navigate to store URL
-                OpenCampaignStoreUrl(currentCampaign);
+                OpenCampaignStoreUrl(currentCampaign, clickId);
                 
                 // Hide display after click
                 if (displayMode == CampaignDisplayMode.IconInterstitial || displayMode == CampaignDisplayMode.RichInterstitial)
@@ -254,7 +254,7 @@ namespace BoostOps
         /// Track campaign click analytics
         /// Delegates to BoostOpsManagerInternal which has impression tracking data
         /// </summary>
-        private void TrackCampaignClick(Campaign campaign)
+        private string TrackCampaignClick(Campaign campaign)
         {
             try
             {
@@ -266,7 +266,7 @@ namespace BoostOps
                 if (manager != null)
                 {
                     // Manager has impression tracking and will link click to impression
-                    manager.TrackClick(campaign, placementId, format);
+                    return manager.TrackClick(campaign, placementId, format);
                     // Debug.Log($"[BoostOpsCampaignDisplay] ✅ Tracked click via manager (format: {format})");
                 }
                 else
@@ -278,6 +278,7 @@ namespace BoostOps
                     string targetStoreId = BoostOpsAnalyticsContract.GetTargetStoreId(campaign);
                     string targetProjectId = BoostOpsAnalyticsContract.GetTargetProjectId(campaign);
                     string placement = placementId ?? "unknown";
+                    string clickId = BoostOpsStoreLauncher.NewClickId();
                     
                     BoostOpsAnalyticsContract.TrackClick(
                         campaignSlug: campaignSlug,
@@ -285,15 +286,18 @@ namespace BoostOps
                         targetStoreId: targetStoreId,
                         targetProjectId: targetProjectId,
                         format: format,
-                        channel: "xpromo"
+                        channel: "xpromo",
+                        clickId: clickId
                         // ⚠️ Missing impression_id - manager not available
                     );
+                    return clickId;
                 }
             }
             catch (System.Exception ex)
             {
                 Debug.LogError($"[BoostOpsCampaignDisplay] ❌ Failed to track click analytics: {ex.Message}");
                 // Don't crash on analytics failures
+                return null;
             }
         }
         
@@ -322,7 +326,7 @@ namespace BoostOps
         /// <summary>
         /// Open store URL for the current platform
         /// </summary>
-        private void OpenCampaignStoreUrl(Campaign campaign)
+        private void OpenCampaignStoreUrl(Campaign campaign, string clickId)
         {
             if (campaign?.target_project?.store_urls == null)
             {
@@ -346,46 +350,16 @@ namespace BoostOps
             }
 #endif
 
-            if (!string.IsNullOrEmpty(storeUrl))
-            {
-                Debug.Log($"[BoostOpsCampaignDisplay] Opening store URL: {storeUrl}");
-                
-#if UNITY_IOS && !UNITY_EDITOR
-                // Check if this is an iOS App Store URL and try native sheet first
-                if (storeUrl.Contains("apps.apple.com"))
-                {
-                    var appStoreIdMatch = System.Text.RegularExpressions.Regex.Match(storeUrl, @"id(\d+)");
-                    if (appStoreIdMatch.Success)
-                    {
-                        string appStoreId = appStoreIdMatch.Groups[1].Value;
-                        // Try native iOS App Store sheet if available
-                        if (BoostOps.BoostOpsAppStoreSheet.IsAvailable())
-                        {
-                            bool success = BoostOps.BoostOpsAppStoreSheet.ShowAppStoreSheet(appStoreId);
-                            if (success)
-                            {
-                                Debug.Log($"[BoostOpsCampaignDisplay] Opened native App Store sheet for ID: {appStoreId}");
-                                return;
-                            }
-                        }
-                    }
-                }
-#endif
-                
-                // Fallback to standard URL opening
-                try
-                {
-                    Application.OpenURL(storeUrl);
-                }
-                catch (System.Exception e)
-                {
-                    Debug.LogError($"[BoostOpsCampaignDisplay] Failed to open store URL: {e.Message}");
-                }
-            }
-            else
+            if (string.IsNullOrEmpty(storeUrl))
             {
                 Debug.LogWarning($"[BoostOpsCampaignDisplay] No store URL available for current platform ({Application.platform})");
+                return;
             }
+            
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaign.campaign_id ?? campaign.name, placementId ?? "unknown", "xpromo",
+                BoostOpsAnalyticsContract.GetTargetStoreId(campaign),
+                BoostOpsAnalyticsContract.GetTargetProjectId(campaign)));
         }
         
         /// <summary>

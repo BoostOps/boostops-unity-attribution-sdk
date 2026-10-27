@@ -329,20 +329,7 @@ namespace BoostOps.Analytics
             try
             {
 #if UNITY_IOS && !UNITY_EDITOR
-                // Check ATT authorization status using Unity's iOS 14 Support package
-                #if UNITY_ADS_IOS_SUPPORT
-                var status = Unity.Advertisement.IosSupport.ATTrackingStatusBinding.GetAuthorizationTrackingStatus();
-                if (status != Unity.Advertisement.IosSupport.ATTrackingStatusBinding.AuthorizationTrackingStatus.AUTHORIZED)
-                {
-                    Debug.Log($"[BoostOps] IDFA not available - ATT not authorized (status: {status})");
-                    return null; // Don't return IDFA if not authorized
-                }
-                #else
-                Debug.LogWarning("[BoostOps] Unity iOS 14 Support package not installed - cannot check ATT status");
-                return null;
-                #endif
-                
-                // Use native implementation for IDFA
+                // Native side returns null unless ATT status is Authorized.
                 string idfa = GetIOSIDFA();
                 if (string.IsNullOrEmpty(idfa) || idfa == "00000000-0000-0000-0000-000000000000")
                 {
@@ -1686,11 +1673,7 @@ namespace BoostOps.Analytics
                 identifiers["idfv"] = idfv;
             }
             
-            var idfa = GetIDFA();
-            if (!string.IsNullOrEmpty(idfa))
-            {
-                identifiers["idfa"] = idfa;
-            }
+            // No IDFA here: this payload goes to the ingest host, which must stay out of NSPrivacyTrackingDomains.
             
             // Install-time extras
             if (includeInstallTimeExtras)

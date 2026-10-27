@@ -6,7 +6,7 @@ namespace BoostOps
 {
     /// <summary>
     /// Device information utility for getting system uptime and boot time
-    /// Used for fraud detection and device fingerprinting
+    /// Used for fraud detection (install-time and uptime sanity checks)
     /// </summary>
     public static class BoostOpsDeviceInfo
     {
@@ -51,6 +51,23 @@ namespace BoostOps
 #endif
         
         #endregion
+        
+        private static readonly System.Diagnostics.Stopwatch _sinceLaunch = System.Diagnostics.Stopwatch.StartNew();
+        
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void AnchorLaunchClock()
+        {
+            _sinceLaunch.Restart();
+        }
+        
+        /// <summary>
+        /// Monotonic milliseconds since this app process started. Unaffected by the
+        /// user changing the device clock, and carries no device boot time.
+        /// </summary>
+        public static long GetElapsedSinceLaunchMilliseconds()
+        {
+            return _sinceLaunch.ElapsedMilliseconds;
+        }
         
         /// <summary>
         /// Get device uptime in milliseconds (time since device last booted)

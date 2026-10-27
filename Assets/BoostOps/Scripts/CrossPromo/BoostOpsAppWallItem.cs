@@ -91,10 +91,10 @@ namespace BoostOps
             Debug.Log($"[BoostOpsAppWallItem] Clicked: {campaign.name}");
             
             // Track click
-            TrackClick();
+            string clickId = TrackClick();
             
             // Open store
-            OpenStore();
+            OpenStore(clickId);
         }
         
         private void TrackImpression()
@@ -115,8 +115,9 @@ namespace BoostOps
             impressionTracked = true;
         }
         
-        private void TrackClick()
+        private string TrackClick()
         {
+            string clickId = BoostOpsStoreLauncher.NewClickId();
             BoostOpsAnalyticsContract.TrackClick(
                 campaignSlug: campaign.campaign_id ?? campaign.name,
                 placement: placement,
@@ -125,11 +126,13 @@ namespace BoostOps
                 targetStoreId: BoostOpsAnalyticsContract.GetTargetStoreId(campaign),
                 targetProjectId: BoostOpsAnalyticsContract.GetTargetProjectId(campaign),
                 format: "app_wall",
-                channel: "xpromo"
+                channel: "xpromo",
+                clickId: clickId
             );
+            return clickId;
         }
         
-        private void OpenStore()
+        private void OpenStore(string clickId)
         {
             if (campaign?.target_project?.store_urls == null)
             {
@@ -152,11 +155,12 @@ namespace BoostOps
             }
 #endif
 
-            if (!string.IsNullOrEmpty(storeUrl))
-            {
-                Application.OpenURL(storeUrl);
-                Debug.Log($"[BoostOpsAppWallItem] Opened store: {storeUrl}");
-            }
+            if (string.IsNullOrEmpty(storeUrl)) return;
+            
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaign.campaign_id ?? campaign.name, placement, "xpromo",
+                BoostOpsAnalyticsContract.GetTargetStoreId(campaign),
+                BoostOpsAnalyticsContract.GetTargetProjectId(campaign)));
         }
         
         private string GetPlatformStoreUrl(StoreUrls storeUrls)

@@ -24,7 +24,6 @@ namespace BoostOps
         /// Hardcoded endpoint for critical install events to bypass remote config race conditions
         /// Install events are too important to risk losing to timing issues with Unity/Firebase Remote Config
         /// </summary>
-        private const string INSTALL_EVENTS_ENDPOINT = "https://analytics.boostops.io/v1/events";
         #region Contract Constants
         
         /// <summary>
@@ -297,8 +296,8 @@ namespace BoostOps
                 // Initialize analytics client directly with hardcoded endpoint
                 BoostOpsAnalyticsClient.Instance.Initialize(
                     settings.ProjectKey, 
-                    INSTALL_EVENTS_ENDPOINT,  // Hardcoded - no remote config dependency
-                    isDevelopmentMode: true  // TEMPORARY: Enable to debug server response
+                    BoostOpsEndpoints.EventsUrl,  // Built-in host table - no remote config dependency
+                    isDevelopmentMode: false
                 );
                 
                 // CRITICAL: Create app open event with first session flag (industry standard)
@@ -374,8 +373,8 @@ namespace BoostOps
                 // Initialize analytics client directly with hardcoded endpoint (reuse same endpoint as first session)
                 BoostOpsAnalyticsClient.Instance.Initialize(
                     settings.ProjectKey, 
-                    INSTALL_EVENTS_ENDPOINT,  // Hardcoded - no remote config dependency
-                    isDevelopmentMode: true  // TEMPORARY: Enable to debug server response
+                    BoostOpsEndpoints.EventsUrl,  // Built-in host table - no remote config dependency
+                    isDevelopmentMode: false
                 );
                 
                 // CRITICAL: Create app open event with first_open explicitly set to FALSE for regular sessions
@@ -464,13 +463,13 @@ namespace BoostOps
                     return;
                 }
                 
-                Debug.Log($"[BoostOps Analytics] 🎯 CRITICAL INSTALL EVENT (Managed Mode) - using assume endpoint: {INSTALL_EVENTS_ENDPOINT}");
+                Debug.Log($"[BoostOps Analytics] 🎯 CRITICAL INSTALL EVENT (Managed Mode) - using endpoint: {BoostOpsEndpoints.EventsUrl}");
                 
                 // Initialize analytics client directly with hardcoded endpoint
                 BoostOpsAnalyticsClient.Instance.Initialize(
                     settings.ProjectKey, 
-                    INSTALL_EVENTS_ENDPOINT,  // Hardcoded - no remote config dependency
-                    isDevelopmentMode: true  // TEMPORARY: Enable to debug server response
+                    BoostOpsEndpoints.EventsUrl,  // Built-in host table - no remote config dependency
+                    isDevelopmentMode: false
                 );
                 
                 // Create install event, queue it, and flush immediately

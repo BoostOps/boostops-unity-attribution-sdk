@@ -201,7 +201,8 @@ namespace BoostOps
                     ProjectKey = projectSettings.projectKey ?? "",
                     UseRemoteManagement = projectSettings.useRemoteManagement,
                     // BoostOpsAnalytics is now derived from UseRemoteManagement
-                    IngestUrl = projectSettings.ingestUrl ?? "https://analytics.boostops.io/v1",
+                    IngestUrl = projectSettings.ingestUrl ?? "https://events.boostopssdk.com/v1",
+                    AttTracking = projectSettings.attTracking,
                     FirebaseAnalytics = projectSettings.firebaseAnalytics,
                     UnityAnalytics = projectSettings.unityAnalytics,
                     AppleAppStoreId = projectSettings.appleAppStoreId ?? "",
@@ -213,6 +214,14 @@ namespace BoostOps
                 
                 // Cache settings for internal classes
                 BoostOps.Internal.InternalSettingsCache.SetProjectSettings(internalSettings);
+                
+                // Older settings assets may still hold analytics.boostops.io, which is no longer an
+                // allowed device host; the built-in host is used instead.
+                if (!string.IsNullOrEmpty(projectSettings.ingestUrl)
+                    && !BoostOps.Analytics.BoostOpsEndpoints.SetConfiguredIngestUrl(projectSettings.ingestUrl))
+                {
+                    BoostOpsLogger.LogDebug("SDK", $"Ignoring ingestUrl '{projectSettings.ingestUrl}' - using {BoostOps.Analytics.BoostOpsEndpoints.EventsUrl}");
+                }
             }
             else
             {
@@ -565,66 +574,35 @@ namespace BoostOps
                 Debug.LogWarning($"[BoostOps] Click called before TrackImpression - generated instance ID: {promo.UnitInstanceId}");
             }
             
+            string campaignSlug = promo.CampaignId ?? promo.Name;
+            string targetStoreId = BoostOpsAnalyticsContract.GetTargetStoreId(promo.Campaign);
+            string targetProjectId = BoostOpsAnalyticsContract.GetTargetProjectId(promo.Campaign);
+            string clickId = BoostOpsStoreLauncher.NewClickId();
+            
             // Track click with impression linking
             BoostOpsAnalyticsContract.TrackClick(
-                campaignSlug: promo.CampaignId ?? promo.Name,
+                campaignSlug: campaignSlug,
                 placement: promo.Placement,
                 format: promo.Format,
                 // Note: source_store_id is in context.store_id (universal) - not passed here
                 // Note: source_project_id is derived server-side from project_key
-                targetStoreId: BoostOpsAnalyticsContract.GetTargetStoreId(promo.Campaign),
-                targetProjectId: BoostOpsAnalyticsContract.GetTargetProjectId(promo.Campaign),
+                targetStoreId: targetStoreId,
+                targetProjectId: targetProjectId,
                 channel: "xpromo",
                 impressionId: promo.ImpressionId,
-                impressionTimestamp: promo.ImpressionTimestamp
+                impressionTimestamp: promo.ImpressionTimestamp,
+                clickId: clickId
             );
             
-            // Debug.Log($"[BoostOps] Tracked click: {promo.Name} (instance: {promo.UnitInstanceId}, impression: {promo.ImpressionId})");
-            
-            // Open app store
             string storeUrl = promo.GetStoreUrl();
-#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
-            // Safety net: launch the Microsoft Store app (protocol link) instead of the browser.
-            storeUrl = BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(storeUrl, null) ?? storeUrl;
-#endif
-            if (!string.IsNullOrEmpty(storeUrl))
-            {
-#if UNITY_IOS && !UNITY_EDITOR
-                // iOS: Try native app sheet first (keeps user in-app)
-                if (storeUrl.Contains("apps.apple.com") && BoostOps.BoostOpsAppStoreSheet.IsAvailable())
-                {
-                    string appStoreId = BoostOps.BoostOpsAppStoreSheet.ExtractAppStoreId(storeUrl);
-                    if (!string.IsNullOrEmpty(appStoreId))
-                    {
-                        bool success = BoostOps.BoostOpsAppStoreSheet.ShowAppStoreSheet(appStoreId);
-                        if (success)
-                        {
-                            // Debug.Log($"[BoostOps] Opened iOS app sheet for: {appStoreId}");
-                            return;
-                        }
-                        else
-                        {
-                            Debug.LogWarning("[BoostOps] Failed to show app sheet, falling back to browser");
-                        }
-                    }
-                }
-#endif
-                
-                // Add attribution parameters to store URL
-                string finalUrl = AppendCrossPromoAttributionParameters(
-                    storeUrl, 
-                    promo.CampaignId ?? promo.Name,
-                    promo.Placement ?? "unknown"
-                );
-                
-                // Fallback: Open in external browser/store
-                Application.OpenURL(finalUrl);
-                // Debug.Log($"[BoostOps] Opening store: {finalUrl}");
-            }
-            else
+            if (string.IsNullOrEmpty(storeUrl))
             {
                 Debug.LogWarning($"[BoostOps] No store URL available for {promo.Name}");
+                return;
             }
+            
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaignSlug, promo.Placement ?? "unknown", "xpromo", targetStoreId, targetProjectId));
         }
         
         /// <summary>
@@ -830,14 +808,21 @@ namespace BoostOps
         }
         
         /// <summary>
-        /// Set custom server endpoint (for testing/enterprise)
+        /// Pin all SDK traffic (events, purchases) to a BoostOps ingest host, e.g.
+        /// "https://events.boostopssdk.com". Must be HTTPS on a BoostOps device host;
+        /// anything else is rejected. While set, server endpoint overrides and host
+        /// failover are disabled. Pass null to return to the built-in host list.
         /// </summary>
-        /// <param name="endpoint">Custom endpoint URL</param>
+        /// <param name="endpoint">Base URL; "/v1" or "/v1/events" suffixes are accepted</param>
         public static void SetCustomEndpoint(string endpoint)
         {
-            // Delegate to internal implementation
-            EnsureInternal();
-            // Internal implementation will handle custom endpoint logic
+            if (!BoostOps.Analytics.BoostOpsEndpoints.SetCustomBaseUrl(endpoint))
+            {
+                Debug.LogError($"[BoostOps SDK] Rejected custom endpoint '{endpoint}' (must be https:// on a BoostOps host)");
+                return;
+            }
+            BoostOps.Analytics.BoostOpsAnalyticsClient.ExistingInstance?.ApplyCustomEndpoint();
+            Debug.Log($"[BoostOps SDK] Endpoint: {BoostOps.Analytics.BoostOpsEndpoints.EventsUrl}");
         }
         
         /// <summary>
@@ -1103,54 +1088,6 @@ namespace BoostOps
                 AllowCaching = publicOptions.AllowCaching,
                 CustomData = publicOptions.CustomData
             };
-        }
-        
-        /// <summary>
-        /// Append cross-promotion attribution parameters to store URL (Android only)
-        /// </summary>
-        private static string AppendCrossPromoAttributionParameters(string baseUrl, string campaignId, string placement)
-        {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            // Android: Add Play Store referrer parameters
-            string sourcePackageName = BoostOpsAnalyticsContract.GetSourceStoreId();
-            string clickId = System.Guid.NewGuid().ToString("N"); // Generate unique click ID
-            long clickTimestamp = (long)(System.DateTime.UtcNow.Subtract(new System.DateTime(1970, 1, 1))).TotalMilliseconds;
-            
-            // Build referrer parameters
-            var referrerParams = new System.Collections.Generic.Dictionary<string, string>
-            {
-                { "utm_source", sourcePackageName },
-                { "utm_medium", "xpromo" },
-                { "utm_campaign", campaignId },
-                { "utm_content", placement },
-                { "xp_click_id", clickId },
-                { "click_ts", clickTimestamp.ToString() }
-            };
-            
-            // URL encode referrer parameters
-            var encodedParams = new System.Collections.Generic.List<string>();
-            foreach (var param in referrerParams)
-            {
-                string encodedKey = System.Uri.EscapeDataString(param.Key);
-                string encodedValue = System.Uri.EscapeDataString(param.Value);
-                encodedParams.Add($"{encodedKey}={encodedValue}");
-            }
-            
-            string referrerString = string.Join("&", encodedParams.ToArray());
-            
-            // Append referrer to Play Store URL
-            if (baseUrl.Contains("?"))
-            {
-                return $"{baseUrl}&referrer={referrerString}";
-            }
-            else
-            {
-                return $"{baseUrl}?referrer={referrerString}";
-            }
-#else
-            // iOS and other platforms: return URL as-is (fingerprint matching only)
-            return baseUrl;
-#endif
         }
         
         #endregion

@@ -117,12 +117,7 @@ namespace BoostOps
                 return;
             }
 
-            // Generate unique click ID
             string clickId = GenerateClickId();
-
-            // Auto-detect source IDs
-            string sourceStoreId = GetStoreIdInternal();
-            // Note: sourceProjectId removed - server derives from project_key
 
             // Track click event (for attribution matching)
             // Server can look up the project_id from the store_id
@@ -134,17 +129,12 @@ namespace BoostOps
                 // Note: source_project_id is derived server-side from project_key
                 targetStoreId: targetStoreId,
                 targetProjectId: "",  // Server derives this from targetStoreId
-                networkCampaignId: clickId,
-                channel: "xpromo"
+                channel: "xpromo",
+                clickId: clickId
             );
 
-            // Open the store URL directly (no need to regenerate it)
-#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
-            // Safety net: launch the Microsoft Store app (protocol link) instead of the browser.
-            storeUrl = BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(storeUrl, null) ?? storeUrl;
-#endif
-            Debug.Log($"[BoostOps CrossPromo] Opening store: {storeUrl}");
-            Application.OpenURL(storeUrl);
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaignSlug, placement, "xpromo", targetStoreId, null));
         }
 
         /// <summary>
@@ -210,12 +200,12 @@ namespace BoostOps
             string sourceProjectId,
             Dictionary<string, string> customParams)
         {
-            // Build referrer parameters
             var referrerParams = new List<string>
             {
                 "utm_source=boostops",
+                "utm_medium=xpromo",
                 $"utm_campaign={Uri.EscapeDataString(campaignSlug ?? "")}",
-                $"utm_medium={Uri.EscapeDataString(placement ?? "")}",
+                $"utm_content={Uri.EscapeDataString(placement ?? "")}",
                 $"click_id={Uri.EscapeDataString(clickId ?? "")}",
                 $"source_store_id={Uri.EscapeDataString(sourceStoreId ?? "")}",
                 $"source_project_id={Uri.EscapeDataString(sourceProjectId ?? "")}",
@@ -232,11 +222,10 @@ namespace BoostOps
                 }
             }
 
-            // Join referrer parameters
-            string referrer = string.Join("&", referrerParams.ToArray());
+            // The whole referrer must be one encoded value; raw '&' would split it into separate Play URL params.
+            string referrer = Uri.EscapeDataString(string.Join("&", referrerParams.ToArray()));
 
-            // Build final URL
-            return $"https://play.google.com/store/apps/details?id={packageName}&referrer={referrer}";
+            return $"https://play.google.com/store/apps/details?id={Uri.EscapeDataString(packageName)}&referrer={referrer}";
         }
 
         #endregion
@@ -271,9 +260,9 @@ namespace BoostOps
             // Build base URL
             string url = $"https://apps.apple.com/app/id{appStoreId}?ct={Uri.EscapeDataString(campaignToken)}&mt=8";
 
-            // Note: We cannot pass source_store_id, target_project_id, click_id via App Store URL
-            // These are tracked server-side via TrackClick() event + attribution matching
-            // This is why iOS attribution uses IDFV + probabilistic matching (95-98% match rate)
+            // App Store URLs cannot carry a device-level click_id. iOS installs are attributed via
+            // SKAdNetwork/AdAttributionKit, or deterministically (IDFA with ATT consent, or a BoostLink).
+            // Fingerprinting / probabilistic matching is not permitted by Apple.
 
             return url;
         }

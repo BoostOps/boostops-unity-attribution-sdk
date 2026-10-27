@@ -340,12 +340,10 @@ namespace BoostOps.Analytics
         public long? time_since_install_ms;          // Time since install
         
         // Privacy & Device Identifiers (hashed with algorithm prefix)
-        public string idfa_hash;                     // "sha256:a1b2c3d4..."
         public string idfv_hash;                     // "sha256:f6e5d4c3..."
         public string gaid_hash;                     // "sha256:9z8y7x6w..."
         public string android_id_hash;               // "sha256:4u5v6w7x..."
         public string custom_user_id;                // Customer's own user ID
-        public string fingerprint_hash;              // Device fingerprint
         
         // Platform-Specific Attribution
         public AppleAttributionData apple_search_ads;     // Apple Search Ads

@@ -1304,19 +1304,19 @@ namespace BoostOps.Internal
         {
             if (campaign == null) return;
             
-            // Track the click using the centralized tracking method
-            TrackClick(campaign, placement);
+            string clickId = TrackClick(campaign, placement);
             
-            // Open appropriate store link
             string storeUrl = GetStoreUrlForPlatform(campaign);
-            if (!string.IsNullOrEmpty(storeUrl))
-            {
-                OpenStoreUrl(storeUrl);
-            }
-            else
+            if (string.IsNullOrEmpty(storeUrl))
             {
                 Debug.LogError($"[BoostOps Manager Internal] No store URL available for campaign: {campaign.name}");
+                return;
             }
+            
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaign.campaign_id ?? campaign.name, placement, "xpromo",
+                BoostOpsAnalyticsContract.GetTargetStoreId(campaign),
+                BoostOpsAnalyticsContract.GetTargetProjectId(campaign)));
         }
         
         /// <summary>
@@ -1345,59 +1345,6 @@ namespace BoostOps.Internal
             return campaign.target_project.store_urls.GetUrlForCurrentPlatform();
         }
         
-        /// <summary>
-        /// Opens a store URL using the best available method for the platform.
-        /// On iOS, uses native App Store sheet if available and URL is an App Store link.
-        /// Otherwise falls back to opening in browser.
-        /// </summary>
-        private void OpenStoreUrl(string storeUrl)
-        {
-            if (string.IsNullOrEmpty(storeUrl))
-            {
-                Debug.LogError("[BoostOps Manager Internal] Cannot open empty store URL");
-                return;
-            }
-
-            Debug.Log($"[BoostOps Manager Internal] Opening store URL: {storeUrl}");
-
-#if (UNITY_STANDALONE_WIN || UNITY_WSA || UNITY_WINRT) && !UNITY_EDITOR
-            // Safety net: make sure a Microsoft Store link launches the Store app (protocol link)
-            // rather than opening apps.microsoft.com in the browser. Non-Microsoft URLs pass through.
-            storeUrl = BoostOpsStoreDetector.ResolveMicrosoftStoreUrl(storeUrl, null) ?? storeUrl;
-            Debug.Log($"[BoostOps Manager Internal] Windows store URL (normalized): {storeUrl}");
-#endif
-
-#if UNITY_IOS && !UNITY_EDITOR
-            // Check if this is an iOS App Store URL and native sheet is available
-            if (storeUrl.Contains("apps.apple.com") && BoostOps.BoostOpsAppStoreSheet.IsAvailable())
-            {
-                var appStoreId = BoostOps.BoostOpsAppStoreSheet.ExtractAppStoreId(storeUrl);
-                if (!string.IsNullOrEmpty(appStoreId))
-                {
-                    bool success = BoostOps.BoostOpsAppStoreSheet.ShowAppStoreSheet(appStoreId);
-                    if (success)
-                    {
-                        Debug.Log($"[BoostOps Manager Internal] Opened App Store sheet for app ID: {appStoreId}");
-                        return;
-                    }
-                    else
-                    {
-                        Debug.Log("[BoostOps Manager Internal] Failed to show App Store sheet, falling back to browser");
-                    }
-                }
-            }
-#endif
-            
-            // Fallback to standard URL opening
-            try
-            {
-                Application.OpenURL(storeUrl);
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[BoostOps Manager Internal] Failed to open store URL: {e.Message}");
-            }
-        }
         
         #endregion
         

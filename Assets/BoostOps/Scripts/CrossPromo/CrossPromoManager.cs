@@ -260,7 +260,19 @@ namespace BoostOps.CrossPromo
             string storeUrl = target.GetStoreUrl();
             if (!string.IsNullOrEmpty(storeUrl))
             {
-                OpenStoreUrl(storeUrl);
+#if UNITY_IOS
+                string targetStoreId = target.iosAppStoreId;
+#else
+                string targetStoreId = target.androidPackageId;
+#endif
+                string clickId = BoostOpsStoreLauncher.NewClickId();
+                BoostOpsAnalyticsContract.TrackClick(
+                    campaignSlug: target.id,
+                    targetStoreId: targetStoreId,
+                    channel: "xpromo",
+                    clickId: clickId);
+                OpenStoreUrl(BoostOpsStoreLauncher.WithAttribution(
+                    storeUrl, clickId, target.id, "unknown", "xpromo", targetStoreId, null));
                 OnTargetOpened?.Invoke(target);
                 DebugLog($"Opened store page: {target.headline} -> {storeUrl}");
             }
@@ -484,43 +496,7 @@ namespace BoostOps.CrossPromo
         /// </summary>
         private void OpenStoreUrl(string storeUrl)
         {
-            if (string.IsNullOrEmpty(storeUrl))
-            {
-                Debug.LogError("[CrossPromoManager] Cannot open empty store URL");
-                return;
-            }
-
-#if UNITY_IOS && !UNITY_EDITOR
-            // Check if this is an iOS App Store URL and native sheet is available
-            if (storeUrl.Contains("apps.apple.com") && BoostOps.BoostOpsAppStoreSheet.IsAvailable())
-            {
-                var appStoreId = BoostOps.BoostOpsAppStoreSheet.ExtractAppStoreId(storeUrl);
-                if (!string.IsNullOrEmpty(appStoreId))
-                {
-                    bool success = BoostOps.BoostOpsAppStoreSheet.ShowAppStoreSheet(appStoreId);
-                    if (success)
-                    {
-                        DebugLog($"Opened App Store sheet for app ID: {appStoreId}");
-                        return;
-                    }
-                    else
-                    {
-                        DebugLog("Failed to show App Store sheet, falling back to browser");
-                    }
-                }
-            }
-#endif
-            
-            // Fallback to standard URL opening
-            try
-            {
-                Application.OpenURL(storeUrl);
-                DebugLog($"Opened store URL in browser: {storeUrl}");
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[CrossPromoManager] Failed to open store URL: {e.Message}");
-            }
+            BoostOpsStoreLauncher.Open(storeUrl);
         }
         
         // Public utility methods for debugging

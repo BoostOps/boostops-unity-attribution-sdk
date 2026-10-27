@@ -233,7 +233,7 @@ namespace BoostOps
                 AttributionSource = "dynamic_link"
             };
             
-            // Note: Install attribution is handled by BoostOpsInstallAttribution system
+            // Note: Install attribution is handled by the analytics first_open event
             // The main attribution system will track this install via TrackInstallEvent(),
             // which sends app_open events with first_open=true (industry standard approach).
             

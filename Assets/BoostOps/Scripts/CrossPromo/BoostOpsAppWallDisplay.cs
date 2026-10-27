@@ -287,10 +287,10 @@ namespace BoostOps
             Debug.Log($"[BoostOpsAppWallDisplay] Item clicked: {campaign.name}");
             
             // Track click
-            TrackClick(campaign);
+            string clickId = TrackClick(campaign);
             
             // Open store
-            OpenStore(campaign);
+            OpenStore(campaign, clickId);
         }
         
         private void TrackImpression(Campaign campaign)
@@ -307,8 +307,9 @@ namespace BoostOps
             );
         }
         
-        private void TrackClick(Campaign campaign)
+        private string TrackClick(Campaign campaign)
         {
+            string clickId = BoostOpsStoreLauncher.NewClickId();
             BoostOpsAnalyticsContract.TrackClick(
                 campaignSlug: campaign.campaign_id ?? campaign.name,
                 placement: placement,
@@ -317,11 +318,13 @@ namespace BoostOps
                 targetStoreId: BoostOpsAnalyticsContract.GetTargetStoreId(campaign),
                 targetProjectId: BoostOpsAnalyticsContract.GetTargetProjectId(campaign),
                 format: "app_wall",
-                channel: "xpromo"
+                channel: "xpromo",
+                clickId: clickId
             );
+            return clickId;
         }
         
-        private void OpenStore(Campaign campaign)
+        private void OpenStore(Campaign campaign, string clickId)
         {
             if (campaign?.target_project?.store_urls == null)
             {
@@ -344,11 +347,12 @@ namespace BoostOps
             }
 #endif
 
-            if (!string.IsNullOrEmpty(storeUrl))
-            {
-                Application.OpenURL(storeUrl);
-                Debug.Log($"[BoostOpsAppWallDisplay] Opened store: {storeUrl}");
-            }
+            if (string.IsNullOrEmpty(storeUrl)) return;
+            
+            BoostOpsStoreLauncher.Open(BoostOpsStoreLauncher.WithAttribution(
+                storeUrl, clickId, campaign.campaign_id ?? campaign.name, placement, "xpromo",
+                BoostOpsAnalyticsContract.GetTargetStoreId(campaign),
+                BoostOpsAnalyticsContract.GetTargetProjectId(campaign)));
         }
         
         private string GetPlatformStoreUrl(StoreUrls storeUrls)

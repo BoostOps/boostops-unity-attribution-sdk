@@ -363,7 +363,6 @@ namespace BoostOps.Analytics
                 // Note: install_id and custom_user_id moved to top-level (schema v6)
                 app_account_token = GetIdentifierValue(identifiers, "app_account_token"),
                 idfv = GetIdentifierValue(identifiers, "idfv"),
-                idfa = GetIdentifierValue(identifiers, "idfa"),
                 asid_sha256 = GetIdentifierValue(identifiers, "asid_sha256b64"), // FIXED: Match the key name from BoostOpsIdentifierManager
                 gaid = GetIdentifierValue(identifiers, "gaid"),
                 firebase_app_id = GetIdentifierValue(identifiers, "firebase_app_id"),
@@ -537,7 +536,7 @@ namespace BoostOps.Analytics
             eventData.@event.click_coordinates = clickCoordinates;
             
             // Generate or use provided click_id (for deterministic Android attribution via Play referrer)
-            eventData.@event.click_id = clickId ?? System.Guid.NewGuid().ToString("N");
+            eventData.@event.click_id = string.IsNullOrEmpty(clickId) ? System.Guid.NewGuid().ToString("N") : clickId;
             
             // Link to impression if provided (passed from display object)
             if (!string.IsNullOrEmpty(impressionId))
@@ -1558,7 +1557,7 @@ namespace BoostOps.Analytics
                     return null; // Organic install or referrer not yet available
                 }
                 
-                // Read timestamps from PlayerPrefs (saved by BoostOpsInstallAttribution)
+                // Read timestamps from PlayerPrefs
                 // These are Unix seconds from Google Play Install Referrer API
                 long? clickTs = null;
                 long? installBeginTs = null;

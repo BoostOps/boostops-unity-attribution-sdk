@@ -47,7 +47,6 @@ extern "C" {
         if (@available(iOS 14, *)) {
             ATTrackingManagerAuthorizationStatus status = [ATTrackingManager trackingAuthorizationStatus];
             if (status != ATTrackingManagerAuthorizationStatusAuthorized) {
-                NSLog(@"%@ IDFA not available - ATT not authorized (status: %ld)", kLogPrefix, (long)status);
                 return NULL;
             }
         }
@@ -59,8 +58,6 @@ extern "C" {
             
             // Check for zero IDFA (00000000-0000-0000-0000-000000000000)
             if (![idfaString isEqualToString:@"00000000-0000-0000-0000-000000000000"]) {
-                NSLog(@"%@ IDFA: %@", kLogPrefix, idfaString);
-                
                 // Create C string copy for Unity
                 const char *cString = [idfaString UTF8String];
                 if (cString) {
@@ -72,11 +69,7 @@ extern "C" {
                         NSLog(@"%@ Error: Failed to allocate memory for IDFA", kLogPrefix);
                     }
                 }
-            } else {
-                NSLog(@"%@ IDFA is zero identifier (tracking disabled)", kLogPrefix);
             }
-        } else {
-            NSLog(@"%@ IDFA not available or tracking disabled", kLogPrefix);
         }
         return NULL;
     }

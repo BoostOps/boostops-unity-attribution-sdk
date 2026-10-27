@@ -84,12 +84,6 @@ namespace BoostOps
                 LogDebug("   ℹ️  Automatic native purchase monitoring has been REMOVED");
                 LogDebug("   ✅ Use explicit calls: BoostOpsSDK.TrackPurchase() in your ProcessPurchase() method");
                 
-                // Set up attribution tracking
-                if (AttributionTrackingEnabled)
-                {
-                    SetupAttributionTracking();
-                }
-                
                 // Load configuration
                 LoadConfiguration();
                 
@@ -289,25 +283,6 @@ namespace BoostOps
         
         #region Attribution Tracking
         
-        private static void SetupAttributionTracking()
-        {
-            // Hook into BoostOps attribution system
-            if (BoostOpsInstallAttribution.Instance != null)
-            {
-                BoostOpsInstallAttribution.OnInstallAttributed += OnInstallAttributed;
-                BoostOpsInstallAttribution.OnConversionTracked += OnConversionTracked;
-            }
-        }
-        
-        private static void OnInstallAttributed(InstallAttributionData attribution)
-        {
-            LogDebug($"Install attributed: {attribution.CampaignId} from {attribution.SourceAppId}");
-        }
-        
-        private static void OnConversionTracked(ConversionData conversion)
-        {
-            LogDebug($"Conversion tracked: {conversion.ConversionType} - {conversion.Value}");
-        }
         
         private static void TrackPurchaseWithAttribution(PurchaseData purchaseData)
         {
@@ -366,22 +341,6 @@ namespace BoostOps
         
         private static AttributionData GetCurrentAttributionData()
         {
-            // Try to get attribution from BoostOps Install Attribution
-            if (BoostOpsInstallAttribution.Instance != null && BoostOpsInstallAttribution.Instance.IsAttributedInstall)
-            {
-                var installAttribution = BoostOpsInstallAttribution.Instance.CurrentAttribution;
-                if (installAttribution != null)
-                {
-                    return new AttributionData
-                    {
-                        CampaignId = installAttribution.CampaignId,
-                        SourceAppId = installAttribution.SourceAppId,
-                        AttributionSource = installAttribution.AttributionSource,
-                        InstallTimestamp = installAttribution.InstallTimestamp.ToString("o")  // Convert DateTime to ISO 8601 string
-                    };
-                }
-            }
-            
             // Try to get attribution from user properties
             var sourceApp = GetUserProperty("cross_promo_source_app");
             var campaignId = GetUserProperty("cross_promo_install_campaign");
