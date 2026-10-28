@@ -488,12 +488,26 @@ namespace BoostOps
         public Creative[] Creatives => creatives ?? new Creative[0];
         
         /// <summary>
-        /// Find a creative by format (icon, banner, hero, native)
+        /// Find a creative by format (icon, banner, hero, native): this platform's creative if the
+        /// config has one, else the all-platforms one, else the first.
         /// </summary>
         public Creative FindCreative(CreativeFormat format)
         {
-            return Creatives.FirstOrDefault(c => c.Format == format);
+            var matches = Creatives.Where(c => c != null && c.Format == format).ToList();
+            var platform = CurrentCreativePlatform;
+            return matches.FirstOrDefault(c => !string.IsNullOrEmpty(platform) &&
+                                               string.Equals(c.platform, platform, StringComparison.OrdinalIgnoreCase))
+                ?? matches.FirstOrDefault(c => string.IsNullOrEmpty(c.platform))
+                ?? matches.FirstOrDefault();
         }
+
+#if UNITY_IOS || UNITY_STANDALONE_OSX
+        private const string CurrentCreativePlatform = "ios";
+#elif UNITY_ANDROID
+        private const string CurrentCreativePlatform = "android";
+#else
+        private const string CurrentCreativePlatform = "";
+#endif
         
         /// <summary>
         /// Find the best variant for a specific format and device preferences
@@ -1230,6 +1244,11 @@ namespace BoostOps
                         var creative = new Creative();
                         creative.format = coreCreative.format;
                         creative.creative_id = coreCreative.creative_id;
+                        creative.orientation = coreCreative.orientation;
+                        creative.platform = coreCreative.platform;
+                        creative.prefetch = coreCreative.prefetch;
+                        creative.required = coreCreative.required;
+                        if (coreCreative.ttl_hours > 0) creative.ttl_hours = coreCreative.ttl_hours;
                         
                         if (coreCreative.variants != null && coreCreative.variants.Length > 0)
                         {
@@ -2264,7 +2283,9 @@ namespace BoostOps
         [SerializeField] public string creative_id;        // Unique identifier for this creative
         [SerializeField] public string format;             // "icon", "banner", "hero", "native"
         [SerializeField] public string orientation;        // "any", "portrait", "landscape"
+        [SerializeField] public string platform;           // "ios", "android"; empty = all platforms (fallback)
         [SerializeField] public bool prefetch = false;     // Download at Init() for instant display
+        [SerializeField] public bool required = false;     // Don't show the campaign until this creative is available
         [SerializeField] public int ttl_hours = 24;        // Cache time-to-live in hours
         [SerializeField] public CreativeVariant[] variants; // Different resolutions/platforms/locales
         

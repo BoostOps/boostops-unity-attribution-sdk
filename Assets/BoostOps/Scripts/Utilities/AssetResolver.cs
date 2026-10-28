@@ -75,7 +75,7 @@ namespace BoostOps
             }
 
             // 3. Try cache
-            var cacheKey = GetCacheKey(variant.url);
+            var cacheKey = GetCacheKey(variant);
             var cachedSprite = LoadFromCache(cacheKey);
             if (cachedSprite != null)
             {
@@ -86,7 +86,7 @@ namespace BoostOps
             // 4. Download from URL
             if (!string.IsNullOrEmpty(variant.url))
             {
-                var downloadedSprite = await DownloadSpriteAsync(variant.url, cacheKey);
+                var downloadedSprite = await DownloadSpriteOnceAsync(variant.url, cacheKey);
                 if (downloadedSprite != null)
                 {
                     Debug.Log($"[BoostOps] Downloaded and cached sprite: {variant.url}");
@@ -130,7 +130,7 @@ namespace BoostOps
             }
 
             // 3. Try cache
-            var cacheKey = GetCacheKey(variant.url);
+            var cacheKey = GetCacheKey(variant);
             var cachedTexture = LoadTextureFromCache(cacheKey);
             if (cachedTexture != null)
             {
@@ -197,6 +197,87 @@ namespace BoostOps
                 await Task.WhenAll(preloadTasks);
                 Debug.Log("[BoostOps] Asset preloading complete");
             }
+        }
+
+        /// <summary>
+        /// The variant to display for a creative: the smallest hosted variant at least
+        /// <paramref name="minPixels"/> wide, else the largest one. Every variant shares the
+        /// bundled local_key, so this only decides which URL is downloaded.
+        /// </summary>
+        public static CreativeVariant PickDisplayVariant(Creative creative, int minPixels = 512)
+        {
+            var variants = creative?.variants;
+            if (variants == null || variants.Length == 0) return null;
+
+            var hosted = variants.Where(v => v != null && !string.IsNullOrEmpty(v.url))
+                .OrderBy(v => v.GetResolution().width)
+                .ToList();
+            if (hosted.Count == 0) return variants[0];
+
+            return hosted.FirstOrDefault(v => v.GetResolution().width >= minPixels) ?? hosted[hosted.Count - 1];
+        }
+
+        /// <summary>
+        /// A sprite that is available right now (bundled, in memory, or in the disk cache), without
+        /// touching the network. Null when it still has to be downloaded.
+        /// </summary>
+        public static Sprite TryGetLoadedSprite(CreativeVariant variant)
+        {
+            if (variant == null) return null;
+
+            if (!string.IsNullOrEmpty(variant.local_key))
+            {
+                var embeddedSprite = LoadEmbeddedSprite(variant.local_key);
+                if (embeddedSprite != null) return embeddedSprite;
+            }
+
+            if (_assetLoadMode == AssetLoadMode.Offline) return null;
+            return LoadFromCache(GetCacheKey(variant));
+        }
+
+        /// <summary>
+        /// True when the campaign can be shown with its real icon. Campaigns whose icon creative is
+        /// marked `required` (partner deals) are held back until the icon is bundled or cached, so a
+        /// placeholder is never shown for another studio's game; the download starts here.
+        /// </summary>
+        public static bool IsRequiredIconReady(Campaign campaign)
+        {
+            var creative = campaign?.target_project?.FindCreative(CreativeFormat.Icon);
+            if (creative == null || !creative.required) return true;
+
+            var variant = PickDisplayVariant(creative);
+            if (TryGetLoadedSprite(variant) != null) return true;
+
+            if (_assetLoadMode == AssetLoadMode.Online && !string.IsNullOrEmpty(variant?.url))
+                _ = LoadSpriteAsync(variant);
+            return false;
+        }
+
+        /// <summary>
+        /// Download the display icon of every campaign marked `prefetch` that isn't bundled or cached
+        /// yet, so the first interstitial or native promo shows the real icon. Runs on the main thread
+        /// (UnityWebRequest requires it); safe to call from any thread.
+        /// </summary>
+        public static void PrefetchCampaignIcons(IEnumerable<Campaign> campaigns)
+        {
+            if (campaigns == null || _assetLoadMode == AssetLoadMode.Offline) return;
+
+            var variants = campaigns
+                .Select(c => c?.target_project?.FindCreative(CreativeFormat.Icon))
+                .Where(c => c != null && c.prefetch)
+                .Select(c => PickDisplayVariant(c))
+                .Where(v => v != null && !string.IsNullOrEmpty(v.url))
+                .ToList();
+            if (variants.Count == 0) return;
+
+            UnityMainThreadDispatcher.Enqueue(() =>
+            {
+                foreach (var variant in variants)
+                {
+                    if (TryGetLoadedSprite(variant) == null)
+                        _ = LoadSpriteAsync(variant);
+                }
+            });
         }
 
         #region Embedded Assets
@@ -458,13 +539,28 @@ namespace BoostOps
             _textureCacheOrder.Clear();
         }
 
+        // Hosted creatives are content-addressed by sha256, so the key never goes stale. Store-icon
+        // fallbacks have no sha256 and are keyed by URL. string.GetHashCode isn't guaranteed stable
+        // across runs, which would orphan the disk cache, so hash with MD5 instead.
+        private static string GetCacheKey(CreativeVariant variant)
+        {
+            if (variant == null) return "";
+            var sha = variant.sha256;
+            if (!string.IsNullOrEmpty(sha) && sha.Length == 64 && sha.All(Uri.IsHexDigit))
+                return $"boostops_asset_{sha.ToLowerInvariant()}";
+            return GetCacheKey(variant.url);
+        }
+
         private static string GetCacheKey(string url)
         {
             if (string.IsNullOrEmpty(url))
                 return "";
 
-            // Simple hash-based cache key
-            return $"boostops_asset_{url.GetHashCode():X8}";
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(url));
+                return $"boostops_asset_{BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant()}";
+            }
         }
 
         private static string GetCachePath(string cacheKey)
@@ -556,6 +652,27 @@ namespace BoostOps
         #endregion
 
         #region Download
+
+        private static readonly Dictionary<string, Task<Sprite>> _inFlightSprites = new Dictionary<string, Task<Sprite>>();
+
+        // A prefetch, an eligibility check and a display can all ask for the same icon at once.
+        private static async Task<Sprite> DownloadSpriteOnceAsync(string url, string cacheKey)
+        {
+            var key = string.IsNullOrEmpty(cacheKey) ? url : cacheKey;
+            if (_inFlightSprites.TryGetValue(key, out var pending))
+                return await pending;
+
+            var task = DownloadSpriteAsync(url, cacheKey);
+            _inFlightSprites[key] = task;
+            try
+            {
+                return await task;
+            }
+            finally
+            {
+                _inFlightSprites.Remove(key);
+            }
+        }
 
         private static async Task<Sprite> DownloadSpriteAsync(string url, string cacheKey)
         {

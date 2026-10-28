@@ -666,6 +666,7 @@ namespace BoostOps.Internal
                     campaigns.Clear();
                     campaigns.AddRange(structuredConfig.Campaigns);
                     foundCampaigns = true;
+                    AssetResolver.PrefetchCampaignIcons(campaigns);
                     
                     // Debug.Log($"[BoostOpsManagerInternal] ✅ Loaded {campaigns.Count} campaigns using JsonConfigWrapper");
                 }
@@ -822,6 +823,11 @@ namespace BoostOps.Internal
                         scheduleInfo += $", Hours: {campaign.schedule.start_hour}:00-{campaign.schedule.end_hour}:00";
                     }
                     // Debug.Log($"[BoostOpsManagerInternal] Campaign '{campaign.name}' filtered out - schedule not active ({scheduleInfo})");
+                    isEligible = false;
+                }
+                
+                if (isEligible && !AssetResolver.IsRequiredIconReady(campaign))
+                {
                     isEligible = false;
                 }
                 

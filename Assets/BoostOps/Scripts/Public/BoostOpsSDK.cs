@@ -419,6 +419,9 @@ namespace BoostOps
                     if (!string.IsNullOrEmpty(format) && !campaign.SupportsFormat(format))
                         continue;
                     
+                    if (!AssetResolver.IsRequiredIconReady(campaign))
+                        continue;
+                    
                     eligible.Add(campaign);
                     
                     if (eligible.Count >= maxCount)
@@ -475,6 +478,7 @@ namespace BoostOps
         /// <summary>
         /// Get a native promo for custom UI implementation
         /// Returns a BoostOpsPromo with campaign data + tracking context
+        /// Picks uniformly at random among eligible campaigns, the same as interstitials.
         /// Uses Null Object pattern - always returns a valid object (check IsAvailable instead of null)
         /// </summary>
         /// <param name="placement">Placement identifier (e.g., "lobby_icon", "main_menu")</param>
@@ -482,12 +486,13 @@ namespace BoostOps
         /// <returns>BoostOpsPromo instance (check IsAvailable property - false if no campaigns available)</returns>
         public static BoostOpsPromo GetNativePromo(string placement, string format = "native")
         {
-            var campaigns = GetEligibleCampaigns(format, placement, maxCount: 1);
+            var campaigns = GetEligibleCampaigns(format, placement, maxCount: int.MaxValue);
             
             if (campaigns == null || campaigns.Count == 0)
                 return BoostOpsPromo.Unavailable(placement, format);
             
-            return new BoostOpsPromo(campaigns[0], placement, format);
+            var campaign = campaigns[UnityEngine.Random.Range(0, campaigns.Count)];
+            return new BoostOpsPromo(campaign, placement, format);
         }
         
         /// <summary>

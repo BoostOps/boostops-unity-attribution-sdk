@@ -1475,12 +1475,24 @@ namespace BoostOps
             // Try to load PNG asset first
             var sprite = TryLoadPNGAsset(campaign, format);
             
+            // Not bundled in the build: use the server-hosted copy, from the cache or downloaded now
+            var hostedVariant = AssetResolver.PickDisplayVariant(FindCreativeForFormat(campaign, format));
+            if (sprite == null)
+            {
+                sprite = AssetResolver.TryGetLoadedSprite(hostedVariant);
+            }
+            
             if (sprite != null)
             {
                 imageComponent.sprite = sprite;
                 imageComponent.color = Color.white; // Reset color when using actual assets
                 // BoostOpsLogger.LogDebug("CampaignDisplay", $"Loaded PNG {format} for campaign '{campaign.name}'");
                 return;
+            }
+            
+            if (!string.IsNullOrEmpty(hostedVariant?.url) && AssetResolver.CurrentMode == AssetResolver.AssetLoadMode.Online)
+            {
+                SwapInDownloadedSprite(imageComponent, hostedVariant);
             }
             
             // Fall back to dynamic texture generation
@@ -1502,6 +1514,30 @@ namespace BoostOps
             {
                 Debug.LogWarning($"[BoostOpsCampaignDisplay] Failed to load or create {format} for campaign '{campaign.name}'");
             }
+        }
+        
+        private static Creative FindCreativeForFormat(Campaign campaign, string format)
+        {
+            switch (format?.ToLowerInvariant())
+            {
+                case "icon": return campaign?.target_project?.FindCreative(CreativeFormat.Icon);
+                case "hero": return campaign?.target_project?.FindCreative(CreativeFormat.Hero);
+                case "banner": return campaign?.target_project?.FindCreative(CreativeFormat.Banner);
+                default: return null;
+            }
+        }
+        
+        /// <summary>
+        /// Show the themed placeholder now and replace it with the downloaded creative when it arrives.
+        /// The sprite belongs to AssetResolver's cache, so it isn't tracked in _runtimeCreatedObjects.
+        /// </summary>
+        private async void SwapInDownloadedSprite(Image imageComponent, CreativeVariant variant)
+        {
+            var sprite = await AssetResolver.LoadSpriteAsync(variant);
+            if (sprite == null || imageComponent == null) return;
+            
+            imageComponent.sprite = sprite;
+            imageComponent.color = Color.white;
         }
         
         /// <summary>

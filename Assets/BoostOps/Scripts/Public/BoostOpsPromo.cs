@@ -161,6 +161,18 @@ namespace BoostOps
         }
         
         /// <summary>
+        /// Load the promoted app's icon: bundled in the build if present, else the cached or freshly
+        /// downloaded server copy. Null if unavailable.
+        /// </summary>
+        /// <param name="minPixels">Smallest hosted size that is sharp enough for your UI (256 or 512)</param>
+        public System.Threading.Tasks.Task<UnityEngine.Sprite> LoadIconAsync(int minPixels = 512)
+        {
+            var variant = AssetResolver.PickDisplayVariant(GetCreative(CreativeFormat.Icon), minPixels);
+            if (variant == null) return System.Threading.Tasks.Task.FromResult<UnityEngine.Sprite>(null);
+            return AssetResolver.LoadSpriteAsync(variant);
+        }
+        
+        /// <summary>
         /// Internal constructor for available promos - use BoostOpsSDK.GetNativePromo() instead
         /// </summary>
         internal BoostOpsPromo(Campaign campaign, string placement, string format = "native")

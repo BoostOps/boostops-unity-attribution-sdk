@@ -2,6 +2,30 @@
 
 All notable changes to the BoostOps Unity SDK will be documented in this file.
 
+## [1.2.4] - 2026-10-27
+
+### Added
+
+- **Interstitials and native promos download icons from BoostOps at runtime.**
+  - If an icon isn't bundled in the build, the SDK checks its memory and disk cache,
+    then downloads it from the creative `url`. The disk cache is keyed by `sha256`.
+  - Icons marked `prefetch` are downloaded as soon as campaigns load.
+  - When the icon isn't ready yet, the interstitial shows the placeholder and swaps
+    in the real icon when the download finishes.
+- **`required` creatives**: campaigns whose icon is marked `required` (partner deals)
+  are held back until the icon is bundled or cached, so a partner's game is never shown
+  with a placeholder.
+- **`BoostOpsPromo.LoadIconAsync()`** returns the native promo's icon, from the bundle,
+  the cache or a download.
+- Icon creatives are chosen per platform (`platform: "ios" | "android"`). If there
+  isn't one, the all-platforms creative is used.
+
+### Changed
+
+- **`GetNativePromo` picks a random eligible campaign**, the same as interstitials.
+  It used to return the first eligible campaign every time, so other campaigns
+  (including direct-deal campaigns) never showed in native placements.
+
 ## [1.2.3] - 2026-10-27
 
 ### Changed

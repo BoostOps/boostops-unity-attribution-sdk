@@ -135,6 +135,8 @@ namespace BoostOps.Core
         [SerializeField] public int ttl_hours;
         [SerializeField] public string creative_id;
         [SerializeField] public string orientation;
+        [SerializeField] public string platform;
+        [SerializeField] public bool required;
     }
 
     [Serializable]
