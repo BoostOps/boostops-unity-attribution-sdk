@@ -476,6 +476,12 @@ namespace BoostOps
                 var installEvent = BoostOpsEventBuilder.CreateInstallEvent(organic, reinstall);
                 BoostOpsAnalyticsClient.Instance.QueueEvent(installEvent);
                 
+                if (BoostOpsPrivacyGate.HoldForAtt())
+                {
+                    Debug.Log("[BoostOps Analytics] 🎯 Install event queued - sends once the ATT prompt is answered or attWaitSeconds runs out");
+                    return;
+                }
+                
                 // Flush the queue immediately to send the install event
                 BoostOpsAnalyticsClient.Instance.FlushQueue((success) =>
                 {

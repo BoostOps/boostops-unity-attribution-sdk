@@ -12,6 +12,6 @@ namespace BoostOps
     /// </summary>
     public static class BoostOpsSDKVersion
     {
-        public const string VERSION = "1.2.4";
+        public const string VERSION = "1.2.5";
     }
 }

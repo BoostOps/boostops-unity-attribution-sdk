@@ -72,6 +72,7 @@ namespace BoostOps.Internal
         public bool BoostOpsAnalytics => UseRemoteManagement;
         public string IngestUrl { get; set; } = "https://events.boostopssdk.com/v1";
         public bool AttTracking { get; set; } = false;
+        public int AttWaitSeconds { get; set; } = 0;
         public bool FirebaseAnalytics { get; set; } = false;
         public bool UnityAnalytics { get; set; } = false;
         public string AppleAppStoreId { get; set; } = "";
@@ -132,6 +133,10 @@ namespace BoostOps.Internal
                 var attTrackingField = settingsType.GetField("attTracking");
                 if (attTrackingField != null)
                     result.AttTracking = (bool)(attTrackingField.GetValue(externalSettings) ?? false);
+                
+                var attWaitSecondsField = settingsType.GetField("attWaitSeconds");
+                if (attWaitSecondsField != null)
+                    result.AttWaitSeconds = (int)(attWaitSecondsField.GetValue(externalSettings) ?? 0);
                 
                 var firebaseAnalyticsField = settingsType.GetField("firebaseAnalytics");
                 if (firebaseAnalyticsField != null)

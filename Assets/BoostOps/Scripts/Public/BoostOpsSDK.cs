@@ -203,6 +203,7 @@ namespace BoostOps
                     // BoostOpsAnalytics is now derived from UseRemoteManagement
                     IngestUrl = projectSettings.ingestUrl ?? "https://events.boostopssdk.com/v1",
                     AttTracking = projectSettings.attTracking,
+                    AttWaitSeconds = projectSettings.attWaitSeconds,
                     FirebaseAnalytics = projectSettings.firebaseAnalytics,
                     UnityAnalytics = projectSettings.unityAnalytics,
                     AppleAppStoreId = projectSettings.appleAppStoreId ?? "",

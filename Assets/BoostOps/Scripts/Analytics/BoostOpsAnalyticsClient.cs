@@ -280,6 +280,15 @@ namespace BoostOps.Analytics
         {
             StartCoroutineRunner();
             _coroutineRunner.StartCoroutine(BatchProcessingLoop());
+            if (BoostOpsPrivacyGate.HoldForAtt())
+                _coroutineRunner.StartCoroutine(FlushWhenAttWaitEnds());
+        }
+        
+        private System.Collections.IEnumerator FlushWhenAttWaitEnds()
+        {
+            while (BoostOpsPrivacyGate.HoldForAtt())
+                yield return new WaitForSecondsRealtime(1f);
+            FlushQueue();
         }
         
         /// <summary>
@@ -294,7 +303,7 @@ namespace BoostOps.Analytics
                 yield return new WaitForSeconds(10f);
                 
                 // Skip if already processing or queue is empty
-                if (_isProcessingQueue || _eventQueue == null || _eventQueue.Count == 0)
+                if (_isProcessingQueue || _eventQueue == null || _eventQueue.Count == 0 || BoostOpsPrivacyGate.HoldForAtt())
                     continue;
                 
                 // Check if we should process (10+ events for batch, or any events to send)
@@ -366,20 +375,49 @@ namespace BoostOps.Analytics
         /// <summary>
         /// Serialize a batch. IDFA is set only for the duration of serialization, so in-memory
         /// and persisted copies never hold it and a retry re-evaluates the route.
+        /// GAID is withheld for this send when consent does not allow ad identifiers.
         /// </summary>
         private string BuildBatchJson(List<AnalyticsEventData> events, string trackingIdfa)
         {
-            foreach (var e in events)
-                if (e.context != null) e.context.idfa = trackingIdfa;
+            bool withholdGaid = !BoostOpsPrivacyGate.AdIdsAllowed();
+            string attStatus = PrivacyConsentHelpers.GetATTStatus();
+            var gaids = new string[events.Count];
+            for (int i = 0; i < events.Count; i++)
+            {
+                var att = events[i].consent?.att;
+                if (att != null && attStatus != null)
+                    att.status = attStatus;
+                
+                var context = events[i].context;
+                if (context == null) continue;
+                context.idfa = trackingIdfa;
+                gaids[i] = context.gaid;
+                if (withholdGaid) context.gaid = null;
+            }
             try
             {
                 return "{\"events\":[" + string.Join(",", events.Select(e => CreateCleanJsonString(e)).ToArray()) + "]}";
             }
             finally
             {
-                foreach (var e in events)
-                    if (e.context != null) e.context.idfa = null;
+                for (int i = 0; i < events.Count; i++)
+                {
+                    var context = events[i].context;
+                    if (context == null) continue;
+                    context.idfa = null;
+                    context.gaid = gaids[i];
+                }
             }
+        }
+        
+        private static readonly System.Text.RegularExpressions.Regex GaidFieldAfterComma =
+            new System.Text.RegularExpressions.Regex(",\\s*\"gaid\"\\s*:\\s*\"[^\"]*\"");
+        private static readonly System.Text.RegularExpressions.Regex GaidFieldFirst =
+            new System.Text.RegularExpressions.Regex("\"gaid\"\\s*:\\s*\"[^\"]*\"\\s*,?");
+        
+        private static string StripGaid(string json)
+        {
+            return json == null ? null : GaidFieldFirst.Replace(GaidFieldAfterComma.Replace(json, ""), "");
         }
 
         private static string RedactIdfa(string json, string idfa)
@@ -562,6 +600,13 @@ namespace BoostOps.Analytics
                 return;
             }
             
+                if (BoostOpsPrivacyGate.HoldForAtt())
+                {
+                    RequeueHeldEvents(validEvents);
+                    SafeInvokeCallback(() => onComplete?.Invoke(true, new AnalyticsBatchResponse { status = "deferred", accepted = 0, rejected = 0 }));
+                    return;
+                }
+                
                 // Use coroutine version with safe callback wrapper
                 SendBatchWithCallbackAsync(validEvents, (success, response) =>
                 {
@@ -962,6 +1007,17 @@ namespace BoostOps.Analytics
             BoostOpsLogger.LogDebug("Analytics", $"📥 Queued: {eventData.event_type} | queue size: {_eventQueue.Count} | endpoint: {_eventsUrl}");
         }
         
+        private void RequeueHeldEvents(List<AnalyticsEventData> events)
+        {
+            foreach (var evt in events)
+            {
+                if (_eventQueue.Count >= MAX_QUEUE_SIZE)
+                    _eventQueue.Dequeue();
+                _eventQueue.Enqueue(evt);
+            }
+            BoostOpsLogger.LogDebug("Analytics", $"⏸️ Holding {events.Count} event(s) for ATT prompt | queue size: {_eventQueue.Count}");
+        }
+        
         /// <summary>
         /// Flush all queued events immediately
         /// </summary>
@@ -971,6 +1027,13 @@ namespace BoostOps.Analytics
             if (_eventQueue.Count == 0)
             {
                 BoostOpsLogger.LogDebug("Analytics", "🚿 FlushQueue called but queue is empty");
+                onComplete?.Invoke(true);
+                return;
+            }
+            
+            if (BoostOpsPrivacyGate.HoldForAtt())
+            {
+                BoostOpsLogger.LogDebug("Analytics", $"🚿 Flush held for ATT prompt - {_eventQueue.Count} event(s) stay queued");
                 onComplete?.Invoke(true);
                 return;
             }
@@ -1921,7 +1984,11 @@ namespace BoostOps.Analytics
             if (files == null || files.Length == 0)
                 yield break;
             
+            while (BoostOpsPrivacyGate.HoldForAtt())
+                yield return new WaitForSecondsRealtime(1f);
+            
             BoostOpsLogger.LogInfo("Analytics", $"🔄 Replaying {files.Length} persisted event(s) from previous session");
+            bool withholdGaid = !BoostOpsPrivacyGate.AdIdsAllowed();
             
             const int replayBatchSize = 50;
             for (int offset = 0; offset < files.Length; offset += replayBatchSize)
@@ -1934,7 +2001,7 @@ namespace BoostOps.Analytics
                     {
                         var json = File.ReadAllText(file);
                         if (!string.IsNullOrEmpty(json))
-                            payloads.Add(WithFreshNonce(json));
+                            payloads.Add(WithFreshNonce(withholdGaid ? StripGaid(json) : json));
                     }
                     catch (System.Exception ex)
                     {

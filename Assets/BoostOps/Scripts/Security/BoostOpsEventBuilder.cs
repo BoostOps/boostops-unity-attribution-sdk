@@ -477,6 +477,23 @@ namespace BoostOps.Analytics
                 consent.consent_source = "default";
             }
             
+            // IAB TCF v2 from the app's consent tool takes precedence over the defaults above
+            var tcf = BoostOpsPrivacyGate.ReadTcf();
+            if (tcf.Present)
+            {
+                bool gdprApplies = tcf.GdprApplies == 1;
+                consent.framework = "tcf_v2";
+                consent.consent_string = tcf.TcString;
+                consent.gdpr_consent_required = gdprApplies;
+                consent.gdpr = consent.gdpr ?? new GDPRConsent { analytics = tcf.AllowsAdMeasurement };
+                consent.gdpr.applies = gdprApplies;
+                consent.gdpr.advertising = tcf.AllowsAdMeasurement;
+                consent.gdpr.measurement = tcf.AllowsAdMeasurement;
+                consent.gdpr.consent_given = BoostOpsPrivacyGate.AdIdsAllowed();
+                if (gdprApplies)
+                    consent.legal_basis = consent.gdpr.legal_basis = "consent";
+            }
+            
             return consent;
         }
         
@@ -1698,20 +1715,7 @@ namespace BoostOps.Analytics
         /// </summary>
         public static string GetATTStatus()
         {
-            try
-            {
-                // Using Unity's built-in iOS Device API
-                switch (UnityEngine.iOS.Device.advertisingTrackingEnabled)
-                {
-                    case true: return "authorized";
-                    case false: return "denied";
-                }
-            }
-            catch
-            {
-                return "not_determined";
-            }
-            return "not_determined";
+            return BoostOpsPrivacyGate.AttStatusName(BoostOpsPrivacyGate.GetAttStatus());
         }
         
         /// <summary>

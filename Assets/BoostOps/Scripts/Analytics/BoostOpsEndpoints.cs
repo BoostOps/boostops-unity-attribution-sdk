@@ -50,7 +50,7 @@ namespace BoostOps.Analytics
             if (_customBaseUrl != null)
                 return null;
             var settings = BoostOps.Internal.InternalSettingsCache.GetProjectSettings();
-            if (settings == null || !settings.AttTracking)
+            if (settings == null || !settings.AttTracking || !BoostOpsPrivacyGate.AdIdsAllowed())
                 return null;
             return BoostOpsIdentifierManager.GetIDFA();
 #else

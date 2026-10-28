@@ -39,6 +39,10 @@ namespace BoostOps
         [Tooltip("iOS direct-deal attribution. When on, users who grant ATT are sent (with IDFA) to the tracking host att-events.boostopssdk.com, and the SDK privacy manifest declares tracking. Your App Store privacy label must then list \"Data Used to Track You\" and the app must show the ATT prompt.")]
         public bool attTracking = false;
         
+        [Tooltip("iOS, with attTracking on: on first launch, hold event sends for up to this many seconds (max 360) while the ATT prompt is unanswered, so the install carries the IDFA when the user allows tracking. 0 = don't wait. Counted from first launch; never waits again once the user answers or time runs out.")]
+        [Range(0, 360)]
+        public int attWaitSeconds = 0;
+        
 #if UNITY_EDITOR
         private void OnValidate()
         {
@@ -176,6 +180,7 @@ namespace BoostOps
                     newSettings.fallbackUrl = currentSettings.fallbackUrl;
                     newSettings.ingestUrl = currentSettings.ingestUrl;
                     newSettings.attTracking = currentSettings.attTracking;
+                    newSettings.attWaitSeconds = currentSettings.attWaitSeconds;
                 }
                 
 #if UNITY_EDITOR
@@ -214,6 +219,7 @@ namespace BoostOps
                     fallbackSettings.fallbackUrl = currentSettings.fallbackUrl;
                     fallbackSettings.ingestUrl = currentSettings.ingestUrl;
                     fallbackSettings.attTracking = currentSettings.attTracking;
+                    fallbackSettings.attWaitSeconds = currentSettings.attWaitSeconds;
                 }
                 _instance = fallbackSettings;
                 return fallbackSettings;

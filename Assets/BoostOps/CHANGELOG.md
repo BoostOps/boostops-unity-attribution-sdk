@@ -2,6 +2,38 @@
 
 All notable changes to the BoostOps Unity SDK will be documented in this file.
 
+## [1.2.5] - 2026-10-27
+
+### Added
+
+- **Consent gating for ad identifiers.** Before each send, the SDK checks whether
+  IDFA and GAID may leave the device:
+  - It reads the IAB TCF v2 values written by the app's consent tool (Google UMP,
+    OneTrust, etc.): `IABTCF_gdprApplies`, `IABTCF_TCString`, `IABTCF_PurposeConsents`.
+  - When GDPR applies, IDFA and GAID are sent only if purposes 1 (store/access on
+    device) and 7 (measure ad performance) are granted.
+  - A "no" recorded through `BoostOpsConsentManager.SetMarketingConsent(false)`
+    (or `SetAllConsent` / `WithdrawAllConsent`) also blocks them.
+  - Without either signal, behavior is unchanged.
+  - Blocked sends go to the regular events host, without the IDFA. The GAID is
+    removed from live batches and from events replayed from disk.
+  - Events now carry `consent.framework = "tcf_v2"`, the TC string,
+    `gdpr_consent_required` and the derived `gdpr` purpose flags.
+- **`attWaitSeconds` project setting (iOS, with `attTracking` on, default 0, max 360).**
+  - On first launch, event sends (including the install) are held while the ATT
+    prompt is unanswered, so an "Allow" install carries the IDFA.
+  - Sends resume as soon as the user answers or the time runs out. The clock
+    starts on first launch.
+  - It never waits again on that install. Purchases are never held.
+
+### Fixed
+
+- **iOS ATT status in events** is now read from `ATTrackingManager` and refreshed
+  when each batch is sent. The new status is `not_applicable` below iOS 14.
+  - Before, it was derived from `advertisingTrackingEnabled`, so "not determined"
+    was reported as "denied".
+  - Before, held or queued events kept the status from when they were created.
+
 ## [1.2.4] - 2026-10-27
 
 ### Added

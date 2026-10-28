@@ -74,6 +74,40 @@ extern "C" {
         return NULL;
     }
     
+    // ATT authorization status
+    // Returns: -1 unavailable (iOS < 14), 0 not determined, 1 restricted, 2 denied, 3 authorized
+    int BoostOpsGetATTStatus() {
+        if (@available(iOS 14, *)) {
+            return (int)[ATTrackingManager trackingAuthorizationStatus];
+        }
+        return -1;
+    }
+    
+    // Integer from standard NSUserDefaults (where IAB TCF consent tools write IABTCF_* keys)
+    // Returns: the value, or fallback when the key is absent or empty
+    int BoostOpsGetUserDefaultInt(const char *key, int fallback) {
+        if (!key) return fallback;
+        id value = [[NSUserDefaults standardUserDefaults] objectForKey:[NSString stringWithUTF8String:key]];
+        if ([value isKindOfClass:[NSNumber class]]) return [value intValue];
+        if ([value isKindOfClass:[NSString class]] && [(NSString *)value length] > 0) return [(NSString *)value intValue];
+        return fallback;
+    }
+    
+    // String from standard NSUserDefaults
+    // Returns: the value or NULL when absent or not a string
+    // Caller must free the returned string
+    char* BoostOpsGetUserDefaultString(const char *key) {
+        if (!key) return NULL;
+        id value = [[NSUserDefaults standardUserDefaults] objectForKey:[NSString stringWithUTF8String:key]];
+        if (![value isKindOfClass:[NSString class]]) return NULL;
+        const char *cString = [(NSString *)value UTF8String];
+        if (!cString) return NULL;
+        char *returnString = (char *)malloc(strlen(cString) + 1);
+        if (!returnString) return NULL;
+        strcpy(returnString, cString);
+        return returnString;
+    }
+    
     // Get Apple Search Ads Attribution Token
     // Returns: ASA token string or NULL if not available
     // Caller must free the returned string
